@@ -1,0 +1,354 @@
+/**
+ * notificationService.ts
+ *
+ * Handles all expo-notifications scheduling, permissions,
+ * and smart (anti-repeat) message selection for HabitBrick.
+ *
+ * ⚠️  Expo Go (SDK 53+) no longer supports push notification
+ *     infrastructure. All functions gracefully no-op when
+ *     running in Expo Go so the app doesn't crash.
+ *     Full notifications work in a development build or
+ *     production build.
+ */
+
+import Constants from 'expo-constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Habit } from '../types';
+import { NOTIFICATION_MESSAGES } from '../constants/notificationMessages';
+
+// ---------------------------------------------------------------------------
+// Expo Go guard
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true when the app is running inside Expo Go (storeClient).
+ * In this environment expo-notifications remote/push infra is unavailable
+ * since SDK 53, so we skip all scheduling and just return mock values.
+ */
+export const IS_EXPO_GO =
+  Constants.executionEnvironment === 'storeClient' ||
+  // fallback for older Constants API shape
+  (Constants as any).appOwnership === 'expo';
+
+// ---------------------------------------------------------------------------
+// Notification handler — only initialise outside Expo Go
+// ---------------------------------------------------------------------------
+
+if (!IS_EXPO_GO) {
+  // Dynamic require so Metro doesn't execute this code path in Expo Go
+  const Notifications = require('expo-notifications');
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+
+  // Configure action categories for In-App Alarm
+  Notifications.setNotificationCategoryAsync('HABIT_ALARM', [
+    {
+      identifier: 'COMPLETE',
+      buttonTitle: 'Mark Completed',
+      options: { opensAppToForeground: false },
+    },
+    {
+      identifier: 'SNOOZE',
+      buttonTitle: 'Snooze 10m',
+      options: { opensAppToForeground: false },
+    },
+    {
+      identifier: 'DISMISS',
+      buttonTitle: 'Dismiss',
+      options: { isDestructive: true, opensAppToForeground: false },
+    },
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const HISTORY_KEY_PREFIX = '@atomicstep/notif_history/';
+const HISTORY_DEPTH = 3; // number of recent messages to avoid repeating
+
+// ---------------------------------------------------------------------------
+// Permissions
+// ---------------------------------------------------------------------------
+
+/**
+ * Request OS notification permissions.
+ * Returns true immediately in Expo Go (no-op).
+ */
+export async function requestNotificationPermissions(): Promise<boolean> {
+  if (IS_EXPO_GO) {
+    console.log('[Notifications] Expo Go detected — skipping permission request.');
+    return false;
+  }
+  try {
+    const Notifications = require('expo-notifications');
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    if (existingStatus === 'granted') return true;
+    const { status } = await Notifications.requestPermissionsAsync();
+    return status === 'granted';
+  } catch (e) {
+    console.warn('[Notifications] Permission request failed:', e);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Anti-repeat message picker
+// ---------------------------------------------------------------------------
+
+async function loadHistory(habitId: string): Promise<number[]> {
+  try {
+    const raw = await AsyncStorage.getItem(HISTORY_KEY_PREFIX + habitId);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveHistory(habitId: string, history: number[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(
+      HISTORY_KEY_PREFIX + habitId,
+      JSON.stringify(history.slice(-HISTORY_DEPTH)),
+    );
+  } catch {
+    // fail silently — non-critical
+  }
+}
+
+/**
+ * Pick a random message from the habit's category pool for a given context,
+ * avoiding the last HISTORY_DEPTH messages shown for that habit.
+ */
+export async function getHabitMessage(
+  habit: Habit,
+  context: 'pending' | 'completed',
+): Promise<string> {
+  const pool = NOTIFICATION_MESSAGES[habit.category]?.[context] ?? [];
+
+  if (pool.length === 0) {
+    return context === 'pending'
+      ? `Time to work on "${habit.title}"!`
+      : `Great job completing "${habit.title}"! 🎉`;
+  }
+
+  const history = await loadHistory(habit.id + '_' + context);
+  const available = pool.map((_, i) => i).filter((i) => !history.includes(i));
+
+  // If all messages have been recently shown, reset
+  const candidates = available.length > 0 ? available : pool.map((_, i) => i);
+  const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+
+  await saveHistory(habit.id + '_' + context, [...history, chosen]);
+  return pool[chosen];
+}
+
+/**
+ * Synchronous version for immediate use (no history tracking).
+ * Useful for inline UI previews.
+ */
+export function getHabitMessageSync(
+  habit: Habit,
+  context: 'pending' | 'completed',
+): string {
+  const pool = NOTIFICATION_MESSAGES[habit.category]?.[context] ?? [];
+  if (pool.length === 0) return `Time to work on "${habit.title}"!`;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+// ---------------------------------------------------------------------------
+// Pre-scheduled Nagging Engine
+// ---------------------------------------------------------------------------
+
+function generateNaggingTimes(startHour: number, startMinute: number): {h: number, m: number}[] {
+  const times: {h: number, m: number}[] = [];
+  
+  // 1. Initial alarm
+  times.push({h: startHour, m: startMinute});
+  
+  // 2. Every 2 hours after initial
+  let currentH = startHour + 2;
+  while (currentH < 22) {
+    times.push({h: currentH, m: startMinute});
+    currentH += 2;
+  }
+  
+  // 3. Final hours (22:00 -> 23:30) every 30 mins
+  // only add if they are after the initial start time
+  const urgent = [
+    {h: 22, m: 0}, {h: 22, m: 30},
+    {h: 23, m: 0}, {h: 23, m: 30}
+  ];
+  for (const u of urgent) {
+    if (u.h > startHour || (u.h === startHour && u.m > startMinute)) {
+      times.push(u);
+    }
+  }
+  
+  return times;
+}
+
+/**
+ * Schedules up to 3 days of localized nagging notifications.
+ * It does NOT cancel existings. Cancellation of an entire habit happens upstream.
+ */
+export async function scheduleNaggingAlarms(habit: Habit): Promise<Habit> {
+  const updatedHabit = { ...habit };
+  if (!updatedHabit.queuedNotificationIds) updatedHabit.queuedNotificationIds = {};
+  
+  if (IS_EXPO_GO || !habit.alarms || habit.alarms.length === 0) return updatedHabit;
+
+  const Notifications = require('expo-notifications');
+  
+  // We schedule for Today, +1 day, +2 days
+  const now = new Date();
+  
+  for (let offset = 0; offset < 3; offset++) {
+    const targetDate = new Date(now);
+    targetDate.setDate(targetDate.getDate() + offset);
+    const dateStr = targetDate.getFullYear() + '-' + String(targetDate.getMonth() + 1).padStart(2, '0') + '-' + String(targetDate.getDate()).padStart(2, '0');
+    
+    // If we've already scheduled this date, skip recreating to avoid massive duplication
+    if (updatedHabit.queuedNotificationIds[dateStr] && updatedHabit.queuedNotificationIds[dateStr].length > 0) {
+      continue;
+    }
+    
+    // Check if scheduled for this day of week!
+    const dayOfWeek = targetDate.getDay() === 0 ? 6 : targetDate.getDay() - 1;
+    if (!habit.frequency[dayOfWeek]) continue;
+    
+    // Check if already completed!
+    if (habit.completionLog[dateStr]) continue;
+
+    const idsForDate: string[] = [];
+    
+    for (const alarm of habit.alarms) {
+      const [hStr, mStr] = alarm.split(':');
+      const startH = parseInt(hStr, 10);
+      const startM = parseInt(mStr, 10);
+      
+      const naggingTimes = generateNaggingTimes(startH, startM);
+      
+      for (const time of naggingTimes) {
+        const triggerDate = new Date(targetDate);
+        triggerDate.setHours(time.h, time.m, 0, 0);
+        
+        if (triggerDate <= now) continue; // Past time today
+        
+        try {
+          const message = await getHabitMessage(habit, 'pending');
+          const identifier = await Notifications.scheduleNotificationAsync({
+            content: {
+              title: habit.title,
+              body: time.h === 22 || time.h === 23 ? `URGENT: ${message} Day is ending!` : message,
+              data: { habitId: habit.id, dateStr },
+              sound: true,
+              vibrate: [0, 250, 250, 250],
+              categoryIdentifier: 'HABIT_ALARM',
+              priority: 'max',
+            },
+            trigger: triggerDate, // native exact Date trigger! Single-shot!
+          });
+          idsForDate.push(identifier);
+        } catch (e) {
+          console.warn('Failed scheduling exact date trigger:', e);
+        }
+      }
+    }
+    
+    updatedHabit.queuedNotificationIds[dateStr] = idsForDate;
+  }
+  
+  return updatedHabit;
+}
+
+/**
+ * Cancel a habit's daily scheduled nagging for a specific date (e.g. today after completion)
+ * Returns a new Habit object with those IDs cleared.
+ */
+export async function cancelNaggingAlarmsForDate(habit: Habit, dateStr: string): Promise<Habit> {
+  const updatedHabit = { ...habit };
+  if (!updatedHabit.queuedNotificationIds || !updatedHabit.queuedNotificationIds[dateStr]) {
+    return updatedHabit; // Nothing to cancel
+  }
+  
+  if (IS_EXPO_GO) {
+    updatedHabit.queuedNotificationIds[dateStr] = [];
+    return updatedHabit;
+  }
+  
+  try {
+    const Notifications = require('expo-notifications');
+    for (const id of updatedHabit.queuedNotificationIds[dateStr]) {
+      await Notifications.cancelScheduledNotificationAsync(id);
+    }
+  } catch(e) {
+     console.warn('Error cancelling specific nags', e);
+  }
+  
+  updatedHabit.queuedNotificationIds[dateStr] = [];
+  return updatedHabit;
+}
+
+/**
+ * Brute force clean ALL scheduled notifications for a habit across all days.
+ */
+export async function cancelAllAlarmsForHabit(habit: Habit): Promise<Habit> {
+  const updatedHabit = { ...habit };
+  if (!updatedHabit.queuedNotificationIds) return updatedHabit;
+  
+  if (!IS_EXPO_GO) {
+    const Notifications = require('expo-notifications');
+    for (const dateStr of Object.keys(updatedHabit.queuedNotificationIds)) {
+      for (const id of updatedHabit.queuedNotificationIds[dateStr]) {
+        try {
+          await Notifications.cancelScheduledNotificationAsync(id);
+        } catch(e) {}
+      }
+    }
+  }
+  
+  updatedHabit.queuedNotificationIds = {};
+  return updatedHabit;
+}
+
+export async function fireCompletionNotification(habit: Habit): Promise<void> {
+  if (IS_EXPO_GO) return;
+  try {
+    const Notifications = require('expo-notifications');
+    const message = await getHabitMessage(habit, 'completed');
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: `✅ ${habit.title}`,
+        body: message,
+        data: { habitId: habit.id },
+        sound: 'default',
+      },
+      trigger: null, // fire immediately
+    });
+  } catch (e) {
+    console.warn('[Notifications] Completion notification failed:', e);
+  }
+}
+
+/**
+ * Re-schedule all active habits that have alarms set.
+ */
+export async function rescheduleAllHabitNotifications(
+  habits: Habit[],
+): Promise<void> {
+  if (IS_EXPO_GO) return;
+  for (const habit of habits) {
+    if (habit.alarms && habit.alarms.length > 0) {
+      await scheduleNaggingAlarms(habit);
+    }
+  }
+}

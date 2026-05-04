@@ -1,0 +1,34 @@
+# EAS Ignore - Exclude files from being uploaded to EAS Build servers
+# This prevents 'Permission Denied' errors from locked Windows system files
+
+# Claude/Agent metadata
+.claude/
+
+# Code review graph
+.code-review-graph/
+
+# Node modules
+node_modules/
+
+# Expo caches
+.expo/
+dist/
+web-build/
+
+# Local env files
+.env*.local
+
+# macOS metadata
+.DS_Store
+
+# Git
+.git/
+
+# Windows specific
+thumbs.db
+desktop.ini
+Thumbs.db
+
+# Standalone utility scripts (not part of the app)
+edit_logo.js
+tight_crop.js

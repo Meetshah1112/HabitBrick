@@ -4,18 +4,39 @@
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web"
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web --port 8081"
   },
   "dependencies": {
-    "expo": "~55.0.7",
-    "expo-status-bar": "~55.0.4",
+    "@expo/vector-icons": "^15.0.2",
+    "@lottiefiles/dotlottie-react": "^0.13.5",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-navigation/bottom-tabs": "^7.2.0",
+    "@react-navigation/native": "^7.0.14",
+    "@react-navigation/native-stack": "^7.2.0",
+    "@reduxjs/toolkit": "^2.11.2",
+    "expo": "~55.0.15",
+    "expo-font": "~55.0.6",
+    "expo-linear-gradient": "~55.0.13",
+    "expo-notifications": "~55.0.19",
+    "expo-sharing": "~55.0.18",
+    "expo-status-bar": "~55.0.5",
+    "expo-system-ui": "~55.0.0",
+    "lottie-react-native": "~7.3.4",
+    "lucide-react-native": "^1.8.0",
     "react": "19.2.0",
-    "react-native": "0.83.2"
+    "react-dom": "19.2.0",
+    "react-native": "0.83.4",
+    "react-native-safe-area-context": "~5.6.2",
+    "react-native-screens": "~4.23.0",
+    "react-native-svg": "15.15.3",
+    "react-native-view-shot": "4.0.3",
+    "react-native-web": "^0.21.0",
+    "react-redux": "^9.2.0"
   },
   "devDependencies": {
-    "@types/react": "~19.2.2",
+    "@types/react": "~19.2.10",
     "typescript": "~5.9.2"
   },
   "private": true

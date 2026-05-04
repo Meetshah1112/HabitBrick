@@ -1,20 +1,71 @@
+import React, { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import { NavigationContainer } from '@react-navigation/native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { Provider, useDispatch } from 'react-redux';
+import { store, AppDispatch } from './src/store/store';
+import { loadData, toggleHabit, editHabit } from './src/store/habitSlice';
+import RootNavigator from './src/navigation/RootNavigator';
+import { cancelNaggingAlarmsForDate, IS_EXPO_GO } from './src/api/notificationService';
 
-export default function App() {
+function AppInner() {
+  const dispatch = useDispatch<AppDispatch>();
+
+  useEffect(() => {
+    dispatch(loadData());
+
+    // In Expo Go (SDK 53+) the notifications module is stripped — skip entirely.
+    // In a dev build or APK this runs normally.
+    if (IS_EXPO_GO) return;
+
+    let sub: { remove: () => void } | null = null;
+    try {
+      // Dynamic require keeps the module from loading in Expo Go at all
+      const Notifications = require('expo-notifications');
+      if (!Notifications?.addNotificationResponseReceivedListener) return;
+
+      sub = Notifications.addNotificationResponseReceivedListener(async (response: any) => {
+        const { actionIdentifier, notification } = response;
+        const { habitId, dateStr } = notification.request.content.data;
+
+        if (!habitId) return;
+
+        if (actionIdentifier === 'COMPLETE') {
+          dispatch(toggleHabit(habitId));
+          const habit = store.getState().habits.habits.find((h: any) => h.id === habitId);
+          if (habit && dateStr) {
+            const updated = await cancelNaggingAlarmsForDate(habit, dateStr);
+            dispatch(editHabit({ id: habitId, updates: { queuedNotificationIds: updated.queuedNotificationIds } }));
+          }
+        } else if (actionIdentifier === 'SNOOZE') {
+          const trigger = new Date(Date.now() + 10 * 60 * 1000);
+          Notifications.scheduleNotificationAsync({
+            content: { ...notification.request.content, body: 'Snoozed! Check back in 10 minutes.' },
+            trigger,
+          });
+        }
+      });
+    } catch (e) {
+      console.warn('[Notifications] Listener setup failed:', e);
+    }
+
+    return () => { sub?.remove(); };
+  }, [dispatch]);
+
   return (
-    <View style={styles.container}>
-      <Text>Open up App.tsx to start working on your app!</Text>
-      <StatusBar style="auto" />
-    </View>
+    <NavigationContainer>
+      <StatusBar style="dark" />
+      <RootNavigator />
+    </NavigationContainer>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
+export default function App() {
+  return (
+    <Provider store={store}>
+      <SafeAreaProvider>
+        <AppInner />
+      </SafeAreaProvider>
+    </Provider>
+  );
+}
