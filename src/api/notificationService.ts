@@ -37,6 +37,8 @@ export const IS_EXPO_GO =
 if (!IS_EXPO_GO) {
   // Dynamic require so Metro doesn't execute this code path in Expo Go
   const Notifications = require('expo-notifications');
+  const { Platform } = require('react-native');
+
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
       shouldShowAlert: true,
@@ -46,6 +48,19 @@ if (!IS_EXPO_GO) {
       shouldShowList: true,
     }),
   });
+
+  // Android requires a notification channel (Android 8+)
+  if (Platform.OS === 'android') {
+    Notifications.setNotificationChannelAsync('habit-reminders', {
+      name: 'Habit Reminders',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      sound: 'default',
+      lightColor: '#FF6B35',
+      enableVibrate: true,
+      showBadge: true,
+    });
+  }
 
   // Configure action categories for In-App Alarm
   Notifications.setNotificationCategoryAsync('HABIT_ALARM', [
@@ -249,12 +264,15 @@ export async function scheduleNaggingAlarms(habit: Habit): Promise<Habit> {
               title: habit.title,
               body: time.h === 22 || time.h === 23 ? `URGENT: ${message} Day is ending!` : message,
               data: { habitId: habit.id, dateStr },
-              sound: true,
+              sound: 'default',
               vibrate: [0, 250, 250, 250],
               categoryIdentifier: 'HABIT_ALARM',
               priority: 'max',
+              ...(require('react-native').Platform.OS === 'android' && {
+                channelId: 'habit-reminders',
+              }),
             },
-            trigger: triggerDate, // native exact Date trigger! Single-shot!
+            trigger: { date: triggerDate },
           });
           idsForDate.push(identifier);
         } catch (e) {
@@ -331,6 +349,9 @@ export async function fireCompletionNotification(habit: Habit): Promise<void> {
         body: message,
         data: { habitId: habit.id },
         sound: 'default',
+        ...(require('react-native').Platform.OS === 'android' && {
+          channelId: 'habit-reminders',
+        }),
       },
       trigger: null, // fire immediately
     });

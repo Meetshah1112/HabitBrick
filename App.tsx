@@ -41,7 +41,7 @@ function AppInner() {
           const trigger = new Date(Date.now() + 10 * 60 * 1000);
           Notifications.scheduleNotificationAsync({
             content: { ...notification.request.content, body: 'Snoozed! Check back in 10 minutes.' },
-            trigger,
+            trigger: { date: trigger },
           });
         }
       });
