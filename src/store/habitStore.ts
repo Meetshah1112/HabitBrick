@@ -22,7 +22,8 @@ import type { Habit } from '../types';
 import { 
   scheduleNaggingAlarms, 
   cancelNaggingAlarmsForDate, 
-  cancelAllAlarmsForHabit 
+  cancelAllAlarmsForHabit,
+  fireAlarmConfirmation,
 } from '../api/notificationService';
 
 export function useHabitStore() {
@@ -97,8 +98,14 @@ export function useHabitStore() {
       // Clean completely first, then reschedule
       const cleanedHabit = await cancelAllAlarmsForHabit(updatedHabit);
       if (alarms.length > 0) {
-        const finalHabit = await scheduleNaggingAlarms(cleanedHabit);
+        // skipCompletionCheck=true: user explicitly set alarms, so schedule
+        // even if the habit is already completed today
+        const finalHabit = await scheduleNaggingAlarms(cleanedHabit, true);
         dispatch(editHabitAction({ id: habitId, updates: { queuedNotificationIds: finalHabit.queuedNotificationIds } }));
+        
+        // Fire an immediate confirmation notification so user sees proof it works
+        const latestAlarm = alarms[alarms.length - 1];
+        await fireAlarmConfirmation(updatedHabit, latestAlarm);
       } else {
         dispatch(editHabitAction({ id: habitId, updates: { queuedNotificationIds: cleanedHabit.queuedNotificationIds } }));
       }

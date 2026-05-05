@@ -38,10 +38,17 @@ function AppInner() {
             dispatch(editHabit({ id: habitId, updates: { queuedNotificationIds: updated.queuedNotificationIds } }));
           }
         } else if (actionIdentifier === 'SNOOZE') {
-          const trigger = new Date(Date.now() + 10 * 60 * 1000);
+          const snoozeDate = new Date(Date.now() + 10 * 60 * 1000);
+          const snoozeTrigger: any = {
+            type: Notifications.SchedulableTriggerInputTypes.DATE,
+            date: snoozeDate,
+          };
+          if (require('react-native').Platform.OS === 'android') {
+            snoozeTrigger.channelId = 'habit-reminders';
+          }
           Notifications.scheduleNotificationAsync({
             content: { ...notification.request.content, body: 'Snoozed! Check back in 10 minutes.' },
-            trigger: { date: trigger },
+            trigger: snoozeTrigger,
           });
         }
       });

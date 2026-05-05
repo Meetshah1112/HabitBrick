@@ -13,6 +13,7 @@
 
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 import { Habit } from '../types';
 import { NOTIFICATION_MESSAGES } from '../constants/notificationMessages';
 
@@ -34,10 +35,18 @@ export const IS_EXPO_GO =
 // Notification handler — only initialise outside Expo Go
 // ---------------------------------------------------------------------------
 
+/** Cached reference to expo-notifications module (null in Expo Go) */
+let _Notifications: any = null;
+
+function getNotifications() {
+  if (!_Notifications && !IS_EXPO_GO) {
+    _Notifications = require('expo-notifications');
+  }
+  return _Notifications;
+}
+
 if (!IS_EXPO_GO) {
-  // Dynamic require so Metro doesn't execute this code path in Expo Go
-  const Notifications = require('expo-notifications');
-  const { Platform } = require('react-native');
+  const Notifications = getNotifications();
 
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
@@ -90,6 +99,40 @@ const HISTORY_KEY_PREFIX = '@atomicstep/notif_history/';
 const HISTORY_DEPTH = 3; // number of recent messages to avoid repeating
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a trigger object for a specific Date with correct type and channelId.
+ */
+function buildDateTrigger(date: Date): any {
+  const Notifications = getNotifications();
+  const trigger: any = {
+    type: Notifications.SchedulableTriggerInputTypes.DATE,
+    date: date,
+  };
+  if (Platform.OS === 'android') {
+    trigger.channelId = 'habit-reminders';
+  }
+  return trigger;
+}
+
+/**
+ * Build a seconds-from-now trigger.
+ */
+function buildSecondsTrigger(seconds: number): any {
+  const Notifications = getNotifications();
+  const trigger: any = {
+    type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+    seconds,
+  };
+  if (Platform.OS === 'android') {
+    trigger.channelId = 'habit-reminders';
+  }
+  return trigger;
+}
+
+// ---------------------------------------------------------------------------
 // Permissions
 // ---------------------------------------------------------------------------
 
@@ -103,7 +146,7 @@ export async function requestNotificationPermissions(): Promise<boolean> {
     return false;
   }
   try {
-    const Notifications = require('expo-notifications');
+    const Notifications = getNotifications();
     const { status: existingStatus } = await Notifications.getPermissionsAsync();
     if (existingStatus === 'granted') return true;
     const { status } = await Notifications.requestPermissionsAsync();
@@ -212,15 +255,21 @@ function generateNaggingTimes(startHour: number, startMinute: number): {h: numbe
 
 /**
  * Schedules up to 3 days of localized nagging notifications.
- * It does NOT cancel existings. Cancellation of an entire habit happens upstream.
+ * 
+ * @param habit - The habit to schedule for.
+ * @param skipCompletionCheck - When true, schedule even if the habit is
+ *   completed today. Use this when the user explicitly sets alarms.
  */
-export async function scheduleNaggingAlarms(habit: Habit): Promise<Habit> {
+export async function scheduleNaggingAlarms(
+  habit: Habit,
+  skipCompletionCheck: boolean = false,
+): Promise<Habit> {
   const updatedHabit = { ...habit };
   if (!updatedHabit.queuedNotificationIds) updatedHabit.queuedNotificationIds = {};
   
   if (IS_EXPO_GO || !habit.alarms || habit.alarms.length === 0) return updatedHabit;
 
-  const Notifications = require('expo-notifications');
+  const Notifications = getNotifications();
   
   // We schedule for Today, +1 day, +2 days
   const now = new Date();
@@ -239,8 +288,8 @@ export async function scheduleNaggingAlarms(habit: Habit): Promise<Habit> {
     const dayOfWeek = targetDate.getDay() === 0 ? 6 : targetDate.getDay() - 1;
     if (!habit.frequency[dayOfWeek]) continue;
     
-    // Check if already completed!
-    if (habit.completionLog[dateStr]) continue;
+    // Only skip completed days during background rescheduling, NOT when user explicitly sets alarms
+    if (!skipCompletionCheck && habit.completionLog[dateStr]) continue;
 
     const idsForDate: string[] = [];
     
@@ -268,11 +317,8 @@ export async function scheduleNaggingAlarms(habit: Habit): Promise<Habit> {
               vibrate: [0, 250, 250, 250],
               categoryIdentifier: 'HABIT_ALARM',
               priority: 'max',
-              ...(require('react-native').Platform.OS === 'android' && {
-                channelId: 'habit-reminders',
-              }),
             },
-            trigger: { date: triggerDate },
+            trigger: buildDateTrigger(triggerDate),
           });
           idsForDate.push(identifier);
         } catch (e) {
@@ -285,6 +331,40 @@ export async function scheduleNaggingAlarms(habit: Habit): Promise<Habit> {
   }
   
   return updatedHabit;
+}
+
+/**
+ * Fire a confirmation notification immediately so the user knows alarms are working.
+ * Also schedules a test notification 5 seconds from now as a double-check.
+ */
+export async function fireAlarmConfirmation(habit: Habit, alarmTime: string): Promise<void> {
+  if (IS_EXPO_GO) return;
+  try {
+    const Notifications = getNotifications();
+    
+    // Immediate confirmation
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: `⏰ Alarm Set: ${habit.title}`,
+        body: `You'll be reminded at ${formatTime12h(alarmTime)} daily. We'll nag you until it's done! 💪`,
+        data: { habitId: habit.id },
+        sound: 'default',
+      },
+      trigger: null, // fire immediately
+    });
+  } catch (e) {
+    console.warn('[Notifications] Alarm confirmation failed:', e);
+  }
+}
+
+/**
+ * Format "14:29" -> "02:29 PM"
+ */
+function formatTime12h(time: string): string {
+  const [h, m] = time.split(':').map(Number);
+  const period = h >= 12 ? 'PM' : 'AM';
+  const displayH = h % 12 === 0 ? 12 : h % 12;
+  return `${String(displayH).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period}`;
 }
 
 /**
@@ -303,7 +383,7 @@ export async function cancelNaggingAlarmsForDate(habit: Habit, dateStr: string):
   }
   
   try {
-    const Notifications = require('expo-notifications');
+    const Notifications = getNotifications();
     for (const id of updatedHabit.queuedNotificationIds[dateStr]) {
       await Notifications.cancelScheduledNotificationAsync(id);
     }
@@ -323,7 +403,7 @@ export async function cancelAllAlarmsForHabit(habit: Habit): Promise<Habit> {
   if (!updatedHabit.queuedNotificationIds) return updatedHabit;
   
   if (!IS_EXPO_GO) {
-    const Notifications = require('expo-notifications');
+    const Notifications = getNotifications();
     for (const dateStr of Object.keys(updatedHabit.queuedNotificationIds)) {
       for (const id of updatedHabit.queuedNotificationIds[dateStr]) {
         try {
@@ -340,7 +420,7 @@ export async function cancelAllAlarmsForHabit(habit: Habit): Promise<Habit> {
 export async function fireCompletionNotification(habit: Habit): Promise<void> {
   if (IS_EXPO_GO) return;
   try {
-    const Notifications = require('expo-notifications');
+    const Notifications = getNotifications();
     const message = await getHabitMessage(habit, 'completed');
 
     await Notifications.scheduleNotificationAsync({
@@ -349,9 +429,6 @@ export async function fireCompletionNotification(habit: Habit): Promise<void> {
         body: message,
         data: { habitId: habit.id },
         sound: 'default',
-        ...(require('react-native').Platform.OS === 'android' && {
-          channelId: 'habit-reminders',
-        }),
       },
       trigger: null, // fire immediately
     });
@@ -362,6 +439,7 @@ export async function fireCompletionNotification(habit: Habit): Promise<void> {
 
 /**
  * Re-schedule all active habits that have alarms set.
+ * Used on app launch — skips completed habits (default behavior).
  */
 export async function rescheduleAllHabitNotifications(
   habits: Habit[],
@@ -369,7 +447,7 @@ export async function rescheduleAllHabitNotifications(
   if (IS_EXPO_GO) return;
   for (const habit of habits) {
     if (habit.alarms && habit.alarms.length > 0) {
-      await scheduleNaggingAlarms(habit);
+      await scheduleNaggingAlarms(habit, false);
     }
   }
 }
