@@ -27,6 +27,8 @@ import {
   Droplets,        // cleaning
   Sprout,          // gardening
   Code,            // coding
+  PhoneOff,        // digitalDetox
+  Shapes,          // custom
   CheckCircle2,    // completion state
   LucideIcon,
 } from 'lucide-react-native';
@@ -55,6 +57,8 @@ export const CATEGORY_ICONS: Record<HabitCategory, LucideIcon> = {
   cleaning: Droplets,
   gardening: Sprout,
   coding: Code,
+  digitalDetox: PhoneOff,
+  custom: Shapes,
 };
 
 interface CategoryIconProps {

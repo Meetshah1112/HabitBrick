@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
-import { ArrowLeft, Check } from 'lucide-react-native';
+import { ArrowLeft, Check, Sparkles } from 'lucide-react-native';
 import { CategoryIcon } from '../components/CategoryIcon';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS, FONT_SIZES, SPACING, BORDER_RADIUS, SHADOWS } from '../constants/theme';
@@ -31,6 +31,55 @@ const CATEGORIES: { key: HabitCategory; rotation: number }[] =
   }));
 
 const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+
+/**
+ * Curated quick-pick habit suggestions.
+ *
+ * Each suggestion maps to an existing HabitCategory so the rest of the app
+ * (sticky-note color, why-reason fallback, icon) just works. The `whyReason`
+ * here is a per-habit override that pre-fills the description field, giving
+ * the user a tailored acknowledgement instead of the category's generic one.
+ *
+ * When tapped, the suggestion populates selectedCategory + habitLabel +
+ * description, which advances to Step 2. From there the existing flow runs
+ * unchanged: frequency picker → self-promise modal → addHabit() → checklist,
+ * alarms, notifications, etc. all attach via HabitDetailScreen.
+ */
+interface SuggestedHabit {
+  title: string;
+  category: HabitCategory;
+  whyReason: string;
+}
+
+const SUGGESTED_HABITS: SuggestedHabit[] = [
+  { title: 'Learn one good thing',         category: 'academics',    whyReason: 'A single new idea a day compounds into deep expertise over months and years.' },
+  { title: 'Help someone',                 category: 'volunteering', whyReason: 'Helping others increases your own happiness and strengthens your sense of purpose.' },
+  { title: 'Self introspection',           category: 'mindfulness',  whyReason: 'Looking inward each day reveals patterns you would otherwise repeat unconsciously.' },
+  { title: 'Sleep at a fixed time',        category: 'sleep',        whyReason: 'A consistent bedtime trains your body clock and improves the quality of every hour you sleep.' },
+  { title: 'Maintain a diary',             category: 'creativity',   whyReason: 'Writing down your thoughts clears the mind and creates a record of your growth.' },
+  { title: 'Plan your day',                category: 'productivity', whyReason: 'Ten minutes of planning saves hours of reactive busywork.' },
+  { title: 'Think twice before you speak', category: 'mindfulness',  whyReason: 'Pausing before responding prevents most misunderstandings and regrets.' },
+  { title: 'Do not be angry',              category: 'mindfulness',  whyReason: 'Anger clouds judgment; calmness keeps you in control of the outcome.' },
+  { title: 'Make new friends',             category: 'social',       whyReason: 'New relationships open you to fresh perspectives and unexpected opportunities.' },
+  { title: 'Work-life balance',            category: 'selfcare',     whyReason: 'Rest is not the opposite of work — it is what makes great work possible.' },
+  { title: 'Eat a meal with family',       category: 'social',       whyReason: 'Shared meals are the simplest and most reliable way to stay close to the people you love.' },
+  { title: 'Reduce TV or mobile time',     category: 'selfcare',     whyReason: 'Less passive scrolling means more time and energy for things that fill you up.' },
+  { title: 'Surprise your child with a small gift', category: 'social', whyReason: 'Small, unexpected gestures build a lifelong feeling of being seen and loved.' },
+  { title: 'Be a role model for your child', category: 'social',     whyReason: 'Children learn far more from what you do than from what you say.' },
+  { title: 'Set goals for the week',       category: 'productivity', whyReason: 'Clear goals turn vague hopes into concrete next actions.' },
+  { title: 'Motivate someone today',       category: 'social',       whyReason: 'A few words of encouragement can change the trajectory of someone’s day.' },
+  { title: 'Develop a positive attitude',  category: 'mindfulness',  whyReason: 'How you frame what happens to you matters more than what actually happens.' },
+  { title: 'Communicate effectively',      category: 'social',       whyReason: 'Saying what you mean clearly is one of the highest-leverage skills you can build.' },
+  { title: 'Drink milk daily',             category: 'nutrition',    whyReason: 'Daily nourishment is the foundation everything else in your day stands on.' },
+  { title: 'Do something for mankind',     category: 'volunteering', whyReason: 'Small contributions, repeated daily, add up to a life that mattered.' },
+  { title: 'Feed birds and animals',       category: 'pets',         whyReason: 'Caring for other living things reconnects you with the world beyond your screen.' },
+  { title: 'Do a regular prayer',          category: 'mindfulness',  whyReason: 'A daily ritual of reflection brings calm, gratitude, and perspective.' },
+  { title: 'Do not waste food',            category: 'nutrition',    whyReason: 'Respecting food respects the people, land, and effort that put it on your plate.' },
+  { title: 'Save water',                   category: 'cleaning',     whyReason: 'Every saved drop is a small daily vote for a planet your children can drink from.' },
+  { title: 'Plant a tree',                 category: 'gardening',    whyReason: 'You will probably never sit in its shade — and that is exactly why it matters.' },
+  { title: 'Save petrol or diesel',        category: 'finance',      whyReason: 'Driving less saves money in the short term and protects the climate in the long term.' },
+  { title: 'Clean your desk',              category: 'cleaning',     whyReason: 'A clear surface clears the mind; a cluttered surface costs focus all day.' },
+];
 
 export default function AddHabitScreen({ navigation }: any) {
   const { addHabit } = useHabitStore();
@@ -60,13 +109,13 @@ export default function AddHabitScreen({ navigation }: any) {
         setHabitLabel('');
         setDescription('');
         setSelectedDays([true, false, true, false, true, false, false]);
-        return true; 
+        return true;
       }
-      
+
       if (isFirstHabit) {
         return true; // Stop them from going back without adding a habit
       }
-      
+
       return false;
     };
 
@@ -80,6 +129,18 @@ export default function AddHabitScreen({ navigation }: any) {
     const newDays = [...selectedDays];
     newDays[index] = !newDays[index];
     setSelectedDays(newDays);
+  };
+
+  /**
+   * Apply a curated suggestion → pre-fills category, label, and description,
+   * then drops the user into Step 2 to confirm frequency and submit. The
+   * downstream creation flow (self-promise modal, addHabit, alarms,
+   * checklist, notifications) is identical to a manually-entered habit.
+   */
+  const handleSuggestionPick = (suggestion: SuggestedHabit) => {
+    setSelectedCategory(suggestion.category);
+    setHabitLabel(suggestion.title);
+    setDescription(suggestion.whyReason);
   };
 
   const handleAddHabit = () => {
@@ -149,6 +210,58 @@ export default function AddHabitScreen({ navigation }: any) {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {/* ── Suggested Habits — quick-pick row ───────────────────── */}
+          <View style={styles.suggestionsHeader}>
+            <Sparkles size={16} color={COLORS.accentOrange} strokeWidth={2.4} />
+            <Text style={styles.suggestionsTitle}>Suggested Habits</Text>
+          </View>
+          <Text style={styles.suggestionsSubtitle}>
+            Tap to pre-fill — you can still tweak everything before saving.
+          </Text>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.suggestionsRow}
+            style={styles.suggestionsScroll}
+          >
+            {SUGGESTED_HABITS.map((s) => {
+              const config = CATEGORY_CONFIG[s.category];
+              return (
+                <TouchableOpacity
+                  key={s.title}
+                  activeOpacity={0.85}
+                  onPress={() => handleSuggestionPick(s)}
+                  style={[styles.suggestionChip, { backgroundColor: config.stickyColor }]}
+                >
+                  <View style={styles.suggestionIconRow}>
+                    <View style={[styles.suggestionIconCircle, { backgroundColor: 'rgba(255,255,255,0.55)' }]}>
+                      <CategoryIcon
+                        category={s.category}
+                        size={16}
+                        color={config.textColor}
+                        strokeWidth={2}
+                      />
+                    </View>
+                    <Text style={[styles.suggestionCategoryTag, { color: config.textColor }]}>
+                      {config.label}
+                    </Text>
+                  </View>
+                  <Text style={styles.suggestionTitle} numberOfLines={2}>
+                    {s.title}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          {/* Divider between suggestions and manual category selection */}
+          <View style={styles.dividerRow}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerLabel}>OR PICK A CATEGORY</Text>
+            <View style={styles.dividerLine} />
+          </View>
+
           <Text style={styles.stepTitle}>Select Category</Text>
           <View style={styles.categoryGrid}>
             {CATEGORIES.map(({ key, rotation }) => {
@@ -388,6 +501,93 @@ const styles = StyleSheet.create({
     color: '#404040',
     marginBottom: SPACING.lg,
   },
+
+  // ── Suggested habits row ───────────────────────────────────────────
+  suggestionsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
+  suggestionsTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#212121',
+    letterSpacing: -0.3,
+  },
+  suggestionsSubtitle: {
+    fontSize: FONT_SIZES.sm,
+    color: COLORS.textTertiary,
+    marginBottom: SPACING.md,
+    fontWeight: '500',
+  },
+  // Pull the horizontal scroll out of the page gutter so chips can bleed
+  // toward both edges, with internal contentContainer padding restoring it.
+  suggestionsScroll: {
+    marginHorizontal: -SPACING.xl,
+    marginBottom: SPACING.lg,
+  },
+  suggestionsRow: {
+    paddingHorizontal: SPACING.xl,
+    gap: SPACING.md,
+    paddingVertical: 4, // give shadow room to render
+  },
+  suggestionChip: {
+    width: 168,
+    minHeight: 96,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.45)',
+    ...SHADOWS.sm,
+  },
+  suggestionIconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  suggestionIconCircle: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  suggestionCategoryTag: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    flex: 1,
+  },
+  suggestionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1F1D1B',
+    lineHeight: 18,
+    marginTop: SPACING.sm,
+  },
+
+  // ── Divider between suggestions and manual selection ──────────────
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    marginBottom: SPACING.lg,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: 'rgba(31, 29, 27, 0.10)',
+  },
+  dividerLabel: {
+    fontSize: FONT_SIZES.xs,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    letterSpacing: 1.4,
+  },
+
   categoryGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',

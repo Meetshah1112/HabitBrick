@@ -5,10 +5,12 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, FONT_SIZES, SPACING, BORDER_RADIUS } from '../constants/theme';
 import { useHabitStore } from '../store/habitStore';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Habit } from '../types';
+import { Habit, CATEGORY_CONFIG } from '../types';
 import { getLocalDateStr } from '../store/habitSlice';
 import { useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { CategoryIcon } from '../components/CategoryIcon';
+import { computeHabitStats, getBestPerformingHabits, formatRate } from '../utils/habitStats';
 
 const CHART_HEIGHT = 140;
 
@@ -103,12 +105,26 @@ export default function InsightsScreen({ route }: any) {
     fetchMeta();
   }, []);
 
-  // If a habitId is passed via route params, show that habit's insights
-  const habitId = route?.params?.habitId;
+  // A habit can be focused two ways: via route param (deep link) or by tapping
+  // a row in "Best Performing" (local override). Local override wins, and is
+  // cleared by the header back button — keeping everything inside this tab.
+  const [focusedHabitId, setFocusedHabitId] = useState<string | null>(null);
+  const habitId = focusedHabitId ?? route?.params?.habitId;
   const habit = habitId ? habits.find((h) => h.id === habitId) : habits[0];
 
   const chartHabits = habitId && habit ? [habit] : habits;
   const chartData = useMemo(() => computeChartData(chartHabits, timePeriod, accountCreatedAt), [chartHabits, timePeriod, accountCreatedAt]);
+
+  // Single-habit view → success rate. Aggregate view → best performers.
+  const isSingleHabit = !!(habitId && habit);
+  const singleHabitStats = useMemo(
+    () => (isSingleHabit ? computeHabitStats(habit!, accountCreatedAt) : null),
+    [isSingleHabit, habit, accountCreatedAt],
+  );
+  const bestPerformers = useMemo(
+    () => (isSingleHabit ? [] : getBestPerformingHabits(habits, accountCreatedAt, 3)),
+    [isSingleHabit, habits, accountCreatedAt],
+  );
 
   const [showModal, setShowModal] = useState(false);
   const [selectedCompletedHabits, setSelectedCompletedHabits] = useState<Habit[]>([]);
@@ -182,6 +198,15 @@ export default function InsightsScreen({ route }: any) {
     });
   }
 
+  // Back: clear a local focus first; otherwise pop the stack (deep-link case).
+  const handleHeaderBack = () => {
+    if (focusedHabitId) {
+      setFocusedHabitId(null);
+      return;
+    }
+    if (navigation.canGoBack()) navigation.goBack();
+  };
+
   const handleDatePress = (item: typeof calendarDays[0]) => {
     if (!item.isCurrentMonth) return;
     setSelectedCompletedHabits(item.completedHabits);
@@ -199,13 +224,17 @@ export default function InsightsScreen({ route }: any) {
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity style={styles.headerIconBtn} onPress={() => navigation.goBack()}>
-            <MaterialIcons name="arrow-back" size={20} color={COLORS.textPrimary} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>
-            Insights
+          {isSingleHabit ? (
+            <TouchableOpacity style={styles.headerIconBtn} onPress={handleHeaderBack}>
+              <MaterialIcons name="arrow-back" size={20} color={COLORS.textPrimary} />
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.headerIconBtn} />
+          )}
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {isSingleHabit ? habit!.title : 'Insights'}
           </Text>
-          {/* Invisible placeholder to keep 'Insights' perfectly centered */}
+          {/* Invisible placeholder to keep the title perfectly centered */}
           <View style={styles.headerIconBtn} />
         </View>
 
@@ -214,6 +243,63 @@ export default function InsightsScreen({ route }: any) {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {/* Success Rate — single-habit view only */}
+          {isSingleHabit && singleHabitStats && (
+            <View style={styles.successCard}>
+              <View style={styles.successHeader}>
+                <View style={styles.successIconBadge}>
+                  <CategoryIcon category={habit!.category} size={18} color={COLORS.white} strokeWidth={2.4} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.successLabel}>SUCCESS RATE</Text>
+                  <Text style={styles.successHabitTitle} numberOfLines={1}>{habit!.title}</Text>
+                </View>
+                <Text style={styles.successPercent}>{formatRate(singleHabitStats.successRate)}</Text>
+              </View>
+
+              {/* Progress bar */}
+              <View style={styles.successBarTrack}>
+                <View style={[styles.successBarFill, { width: `${Math.round(singleHabitStats.successRate * 100)}%` }]} />
+              </View>
+
+              {/* Sub-stats */}
+              <View style={styles.successStatsRow}>
+                <SuccessStat value={`${singleHabitStats.completedDays}/${singleHabitStats.scheduledDays}`} label="Days done" />
+                <View style={styles.successStatDivider} />
+                <SuccessStat value={`${habit!.currentStreak}`} label="Current streak" />
+                <View style={styles.successStatDivider} />
+                <SuccessStat value={`${habit!.longestStreak}`} label="Best streak" />
+              </View>
+            </View>
+          )}
+
+          {/* Best Performing Habits — aggregate view only */}
+          {!isSingleHabit && bestPerformers.length > 0 && (
+            <View style={styles.bestCard}>
+              <Text style={styles.bestHeader}>🏆 Best Performing Habits</Text>
+              {bestPerformers.map((r, idx) => (
+                <TouchableOpacity
+                  key={r.habit.id}
+                  style={styles.bestRow}
+                  activeOpacity={0.7}
+                  onPress={() => setFocusedHabitId(r.habit.id)}
+                >
+                  <Text style={styles.bestRank}>{idx + 1}</Text>
+                  <View style={[styles.bestIconBadge, { backgroundColor: CATEGORY_CONFIG[r.habit.category].accentColor }]}>
+                    <CategoryIcon category={r.habit.category} size={16} color={COLORS.white} strokeWidth={2.4} />
+                  </View>
+                  <View style={styles.bestRowText}>
+                    <Text style={styles.bestRowTitle} numberOfLines={1}>{r.habit.title}</Text>
+                    <View style={styles.bestRowBarTrack}>
+                      <View style={[styles.bestRowBarFill, { width: `${Math.round(r.stats.successRate * 100)}%` }]} />
+                    </View>
+                  </View>
+                  <Text style={styles.bestRowPercent}>{formatRate(r.stats.successRate)}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
           {/* Consistency Graph */}
           <View style={styles.graphContainer}>
             {/* Tape effect */}
@@ -380,9 +466,169 @@ export default function InsightsScreen({ route }: any) {
   );
 }
 
+function SuccessStat({ value, label }: { value: string; label: string }) {
+  return (
+    <View style={styles.successStat}>
+      <Text style={styles.successStatValue}>{value}</Text>
+      <Text style={styles.successStatLabel}>{label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+
+  // ── Success Rate card (single-habit view) ──
+  successCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: BORDER_RADIUS.lg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: SPACING.xl,
+    gap: SPACING.lg,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  successHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+  },
+  successIconBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#E86E3C',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  successLabel: {
+    fontSize: FONT_SIZES.xs,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    letterSpacing: 1.5,
+  },
+  successHabitTitle: {
+    fontSize: FONT_SIZES.lg,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginTop: 1,
+  },
+  successPercent: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#E86E3C',
+    letterSpacing: -1,
+  },
+  successBarTrack: {
+    height: 8,
+    backgroundColor: '#F1F5F9',
+    borderRadius: BORDER_RADIUS.full,
+    overflow: 'hidden',
+  },
+  successBarFill: {
+    height: '100%',
+    backgroundColor: '#E86E3C',
+    borderRadius: BORDER_RADIUS.full,
+  },
+  successStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  successStat: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  successStatValue: {
+    fontSize: FONT_SIZES.lg,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+  },
+  successStatLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: COLORS.textMuted,
+    marginTop: 2,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  successStatDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: COLORS.border,
+  },
+
+  // ── Best Performing Habits card (aggregate view) ──
+  bestCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: BORDER_RADIUS.lg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: SPACING.xl,
+    gap: SPACING.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  bestHeader: {
+    fontSize: FONT_SIZES.lg,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+    letterSpacing: -0.3,
+    marginBottom: SPACING.xs,
+  },
+  bestRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+  },
+  bestRank: {
+    fontSize: FONT_SIZES.md,
+    fontWeight: '800',
+    color: COLORS.textMuted,
+    width: 14,
+    textAlign: 'center',
+  },
+  bestIconBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bestRowText: {
+    flex: 1,
+    gap: 5,
+  },
+  bestRowTitle: {
+    fontSize: FONT_SIZES.md,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  bestRowBarTrack: {
+    height: 6,
+    backgroundColor: '#F1F5F9',
+    borderRadius: BORDER_RADIUS.full,
+    overflow: 'hidden',
+  },
+  bestRowBarFill: {
+    height: '100%',
+    backgroundColor: '#E86E3C',
+    borderRadius: BORDER_RADIUS.full,
+  },
+  bestRowPercent: {
+    fontSize: FONT_SIZES.md,
+    fontWeight: '800',
+    color: '#E86E3C',
+    minWidth: 42,
+    textAlign: 'right',
   },
   header: {
     paddingHorizontal: SPACING.xl,
@@ -401,10 +647,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   headerTitle: {
-    fontSize: 28,
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 24,
     fontWeight: '800',
     color: '#212121',
     letterSpacing: -0.5,
+    marginHorizontal: SPACING.sm,
   },
   scrollView: {
     flex: 1,

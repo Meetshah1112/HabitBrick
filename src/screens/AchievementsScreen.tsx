@@ -21,6 +21,7 @@ import {
   BookOpen, Leaf, Brain, Users, Heart, Sparkles, Rocket, Crown,
   Lock, Share2, Gift, Layers, Package, X,
 } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { COLORS, FONT_SIZES, SPACING, BORDER_RADIUS } from '../constants/theme';
 import { useHabitStore } from '../store/habitStore';
 import { Badge } from '../types';
@@ -59,12 +60,24 @@ export default function AchievementsScreen() {
   const isFocused = useIsFocused();
   const [selectedBadge, setSelectedBadge] = useState<Badge | null>(null);
   const [isSharing, setIsSharing] = useState(false);
+  const [userName, setUserName] = useState<string>('');
   const viewShotRef = React.useRef<any>(null);
 
   useEffect(() => {
     if (isFocused) {
       dispatch(markBadgesSeen());
     }
+  }, [isFocused]);
+
+  // Load the user's name so each badge can be personalised ("Awarded to Ritesh").
+  // Re-reads on focus in case the name was just edited on the Home screen.
+  useEffect(() => {
+    const loadName = async () => {
+      let stored = await AsyncStorage.getItem('@atomicstep/username');
+      if (!stored) stored = await AsyncStorage.getItem('@habitflow/username');
+      setUserName((stored || 'Champion').trim());
+    };
+    loadName();
   }, [isFocused]);
 
   const unlockedCount = badges.filter((b) => b.unlocked).length;
@@ -83,8 +96,9 @@ export default function AchievementsScreen() {
 
       if (!(await Sharing.isAvailableAsync())) {
         // Fallback to text
+        const who = userName ? `${userName} just` : 'I just';
         await Share.share({
-          message: `I just earned the "${selectedBadge.title}" badge on HabitBrick! 🏆\n\n${selectedBadge.description}\n\nJoin me in building better habits! #HabitBrick #Consistency`,
+          message: `${who} earned the "${selectedBadge.title}" badge on HabitBrick! 🏆\n\n${selectedBadge.description}\n\nJoin me in building better habits! #HabitBrick #Consistency`,
         });
         return;
       }
@@ -233,7 +247,7 @@ export default function AchievementsScreen() {
 
                         <Text style={styles.modalTitle}>{selectedBadge.title}</Text>
                         <Text style={styles.modalDesc}>{selectedBadge.description}</Text>
-                        
+
                         {isUnlocked && (
                           <Text style={styles.modalDate}>
                             Earned{' '}
@@ -241,6 +255,15 @@ export default function AchievementsScreen() {
                               month: 'long', day: 'numeric', year: 'numeric',
                             })}
                           </Text>
+                        )}
+
+                        {/* Personalised footer — the owner's name is baked into
+                            the shared image so every badge feels like it's theirs. */}
+                        {isUnlocked && !!userName && (
+                          <View style={styles.shareOwnerBox}>
+                            <Text style={styles.shareOwnerLabel}>AWARDED TO</Text>
+                            <Text style={styles.shareOwnerName}>{userName}</Text>
+                          </View>
                         )}
                       </LinearGradient>
                     </View>
@@ -545,5 +568,26 @@ const styles = StyleSheet.create({
     color: '#E86E3C',
     textTransform: 'uppercase',
     letterSpacing: 1.5,
+  },
+  shareOwnerBox: {
+    alignItems: 'center',
+    marginTop: SPACING.sm,
+    paddingTop: SPACING.md,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(31, 29, 27, 0.08)',
+    alignSelf: 'stretch',
+    gap: 2,
+  },
+  shareOwnerLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    letterSpacing: 2,
+  },
+  shareOwnerName: {
+    fontSize: FONT_SIZES.lg,
+    fontWeight: '800',
+    color: '#1F1D1B',
+    letterSpacing: -0.3,
   },
 });

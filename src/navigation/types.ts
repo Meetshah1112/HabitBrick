@@ -1,6 +1,4 @@
 export type RootStackParamList = {
-  SignIn: undefined;
-  SignUp: undefined;
   Welcome: { isNewUser: boolean };
   Tabs: { screen?: string; params?: Record<string, any> } | undefined;
   HabitDetail: { habitId: string };
@@ -19,5 +17,6 @@ export type TabParamList = {
   Home: { justCompletedId?: string } | undefined;
   Insights: { habitId?: string } | undefined;
   AddHabit: undefined;
+  World: undefined;
   Achievements: undefined;
 };

@@ -15,7 +15,7 @@
       "supportsTablet": true
     },
     "android": {
-      "package": "com.atomicstep.habitflow",
+      "package": "com.HabitBrick.android",
       "adaptiveIcon": {
         "backgroundColor": "#000000",
         "foregroundImage": "./assets/adaptive-icon-padded.png"

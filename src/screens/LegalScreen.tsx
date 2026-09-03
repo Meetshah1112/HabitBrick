@@ -22,7 +22,7 @@ export default function LegalScreen() {
 
   const isTerms = type === 'terms';
   const title = isTerms ? 'Terms of Service' : 'Privacy Policy';
-  const lastUpdated = 'April 17, 2026';
+  const lastUpdated = 'June 5, 2026';
 
   const renderContent = () => {
     if (isTerms) {
@@ -35,12 +35,12 @@ export default function LegalScreen() {
 
           <Text style={styles.sectionTitle}>2. Use of the App</Text>
           <Text style={styles.paragraph}>
-            HabitBrick is designed to help you track habits and improve consistency. You are responsible for maintaining the confidentiality of your account and for all activities that occur under your account.
+            HabitBrick is designed to help you track habits and improve consistency. There is no account or sign-in — the app runs entirely on your device, and you are responsible for the device it's installed on.
           </Text>
 
           <Text style={styles.sectionTitle}>3. User Data</Text>
           <Text style={styles.paragraph}>
-            Your habit data is stored locally on your device and occasionally backed up to our secure cloud servers if you have an active account. We do not sell your personal habit data to third parties.
+            All of your habit data — habits, streaks, badges, and reminders — is stored locally on your device only. Nothing is transmitted to us or any third party, and we have no servers that store or process your data.
           </Text>
 
           <Text style={styles.sectionTitle}>4. Limitations of Liability</Text>
@@ -55,22 +55,22 @@ export default function LegalScreen() {
       <View style={styles.contentSection}>
         <Text style={styles.sectionTitle}>1. Data Collection</Text>
         <Text style={styles.paragraph}>
-          We collect minimal personal information such as your name and email address to provide account synchronization. Your habit logs and streaks are processed locally to ensure maximum responsiveness.
+          HabitBrick does not have accounts and does not collect your name, email, location, or any other personal information. The habits, streaks, badges, and display name you enter are stored only in local storage on your own device.
         </Text>
 
         <Text style={styles.sectionTitle}>2. How We Use Data</Text>
         <Text style={styles.paragraph}>
-          Your data is used solely to improve your experience, calculate achievements, and provide reminders. Aggregated, non-identifiable data may be used for analytical purposes.
+          Everything you enter is used solely to run the app on your device — calculating streaks, unlocking badges, and building your Brick World. Since nothing is transmitted, there is no analytics, tracking, or aggregation of any kind.
         </Text>
 
-        <Text style={styles.sectionTitle}>3. Security</Text>
+        <Text style={styles.sectionTitle}>3. Notifications</Text>
         <Text style={styles.paragraph}>
-          We implement industry-standard security measures to protect your data. However, no method of transmission over the internet or electronic storage is 100% secure.
+          Habit reminders are scheduled directly on your device using your phone's own notification system. No reminder content or scheduling data ever leaves your device.
         </Text>
 
         <Text style={styles.sectionTitle}>4. Your Rights</Text>
         <Text style={styles.paragraph}>
-          You have the right to access, update, or delete your personal information at any time within the app settings.
+          Use "Reset Progress" in your profile to permanently erase all local data at any time, or simply uninstall the app — since nothing exists outside your device, there is nothing left behind.
         </Text>
       </View>
     );

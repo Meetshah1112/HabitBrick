@@ -408,7 +408,7 @@ const habitSlice = createSlice({
       state,
       action: PayloadAction<{
         id: string;
-        updates: Partial<Pick<Habit, 'title' | 'description' | 'category' | 'frequency' | 'targetDaysPerWeek' | 'alarms' | 'queuedNotificationIds'>>;
+        updates: Partial<Pick<Habit, 'title' | 'description' | 'category' | 'frequency' | 'targetDaysPerWeek' | 'alarms' | 'queuedNotificationIds' | 'queuedEodIds'>>;
       }>,
     ) {
       const habit = state.habits.find((h) => h.id === action.payload.id);

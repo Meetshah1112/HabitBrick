@@ -18,6 +18,7 @@ import { COLORS, FONT_SIZES, SPACING, BORDER_RADIUS, SHADOWS } from '../constant
 import { useHabitStore } from '../store/habitStore';
 import { CATEGORY_CONFIG, HabitCategory, Habit } from '../types';
 import { getLocalDateStr } from '../store/habitSlice';
+import { computeHabitStats, formatRate } from '../utils/habitStats';
 
 const CHART_HEIGHT = 140;
 const DAYS_OF_WEEK = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
@@ -68,6 +69,7 @@ export default function HabitDetailScreen({ route, navigation }: any) {
   }, []);
 
   const chartData = useMemo(() => (habit ? computeHabitChartData(habit, accountCreatedAt) : []), [habit, accountCreatedAt]);
+  const habitStats = useMemo(() => (habit ? computeHabitStats(habit, accountCreatedAt) : null), [habit, accountCreatedAt]);
 
   // Modals state
   const [showEditModal, setShowEditModal] = useState(false);
@@ -325,6 +327,12 @@ export default function HabitDetailScreen({ route, navigation }: any) {
                 <MaterialIcons name="calendar-today" size={18} color={COLORS.accentBlue} />
                 <Text style={styles.statValue}>{habit.targetDaysPerWeek}</Text>
                 <Text style={styles.statLabel}>days/wk</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statItem}>
+                <MaterialIcons name="insights" size={18} color="#10B981" />
+                <Text style={styles.statValue}>{habitStats ? formatRate(habitStats.successRate) : '—'}</Text>
+                <Text style={styles.statLabel}>Success</Text>
               </View>
             </View>
           </View>

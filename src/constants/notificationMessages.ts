@@ -688,4 +688,39 @@ export const NOTIFICATION_MESSAGES: Record<HabitCategory, HabitMessages> = {
       "Great work! That's one more problem solved.",
     ],
   },
+
+  // ─────────────────────────────────────────────────
+  digitalDetox: {
+    pending: [
+      "Your screen will survive without you. Go touch some grass. 🌿",
+      "The notifications can wait. Your peace of mind can't.",
+      "Time to unplug. The real world has better graphics anyway.",
+      "Put the phone down. Future-you is already thanking you.",
+      "Doomscrolling burns hours and zero calories. Log off. 📵",
+    ],
+    completed: [
+      "Unplugged and present. That's a quiet kind of strength. 🌿",
+      "You chose the real world over the feed. Well done.",
+      "Detox done. Your attention is yours again.",
+      "Screen-free and clear-headed. One brick for your focus.",
+    ],
+  },
+
+  // ─────────────────────────────────────────────────
+  // Catch-all category — generic but warm, since the habit could be anything.
+  custom: {
+    pending: [
+      "Your habit is waiting. You picked it for a reason — go honor it.",
+      "Small action, big identity. Make today's brick count.",
+      "You chose this habit. Now choose to show up for it.",
+      "One rep. One step. One brick. That's all today asks of you.",
+      "Future-you is watching. Don't make them disappointed. 👀",
+    ],
+    completed: [
+      "Done. One more brick in the wall you're building. 🧱",
+      "That's your habit, your way. Another one in the books.",
+      "Showing up — that's the whole game. Nice work.",
+      "Quietly building the life you want, one habit at a time.",
+    ],
+  },
 };

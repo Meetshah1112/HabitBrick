@@ -20,7 +20,9 @@ export type HabitCategory =
   | 'pets'
   | 'cleaning'
   | 'gardening'
-  | 'coding';
+  | 'coding'
+  | 'digitalDetox'
+  | 'custom';
 
 export interface Habit {
   id: string;
@@ -37,6 +39,7 @@ export interface Habit {
   notificationTime?: string; // deprecated, use alarms instead
   alarms?: string[]; // Array of times like ["08:00", "12:00"]
   queuedNotificationIds?: Record<string, string[]>; // dateStr -> notification identifiers
+  queuedEodIds?: Record<string, string[]>; // dateStr -> end-of-day "last chance" reminder ids
 }
 
 export interface Badge {
@@ -303,6 +306,31 @@ export const CATEGORY_CONFIG: Record<HabitCategory, {
     accentColor: '#334155',
     placeholder: 'e.g., Solve 1 LeetCode problem',
     whyReason: 'Coding builds logical thinking, problem-solving skills, and empowers you to build the future.',
+  },
+  digitalDetox: {
+    color: '#E0E7FF',
+    borderColor: '#C7D2FE',
+    textColor: '#3730A3',
+    icon: 'phone-off',
+    label: 'Digital Detox',
+    stickyColor: '#C3CAF5',
+    accentColor: '#4F46E5',
+    placeholder: 'e.g., No phone for the first hour after waking',
+    whyReason: 'Unplugging restores your focus, frees your attention, and brings you back to the real world.',
+  },
+  // Catch-all for anything that doesn't fit the curated 22.
+  // Neutral warm-paper palette so it reads as "your own / uncategorized"
+  // without competing with the colorful named categories above.
+  custom: {
+    color: '#F1ECE2',           // same as gradientStart — feels like blank paper
+    borderColor: '#D6CCB6',
+    textColor: '#3F2A1F',
+    icon: 'auto-awesome',
+    label: 'Custom',
+    stickyColor: '#EFE6D3',
+    accentColor: '#E86E3C',     // brand terracotta — gives it warmth
+    placeholder: 'e.g., Anything you want to build into a habit',
+    whyReason: 'This is your habit, your way. Define what matters to you and make it stick.',
   },
 };
 

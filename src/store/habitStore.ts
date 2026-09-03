@@ -19,11 +19,14 @@ import {
   getLocalDateStr,
 } from './habitSlice';
 import type { Habit } from '../types';
-import { 
-  scheduleNaggingAlarms, 
-  cancelNaggingAlarmsForDate, 
+import {
+  scheduleNaggingAlarms,
+  cancelNaggingAlarmsForDate,
   cancelAllAlarmsForHabit,
   fireAlarmConfirmation,
+  scheduleEndOfDayReminders,
+  cancelEndOfDayReminderForDate,
+  cancelAllEndOfDayReminders,
 } from '../api/notificationService';
 
 export function useHabitStore() {
@@ -51,20 +54,30 @@ export function useHabitStore() {
       dispatch(toggleHabitAction(habitId));
 
       const todayStr = getLocalDateStr();
-      
+
       if (newCompleted) {
-        // Marked visually complete. Delete all the nagging alarms for today instantly.
-        const updatedHabit = await cancelNaggingAlarmsForDate(habit, todayStr);
-        if (updatedHabit.queuedNotificationIds) {
-          dispatch(editHabitAction({ id: habitId, updates: { queuedNotificationIds: updatedHabit.queuedNotificationIds } }));
-        }
+        // Marked complete → silence today's reminders (alarm nags + EOD nudge).
+        const afterNags = await cancelNaggingAlarmsForDate(habit, todayStr);
+        const afterEod = await cancelEndOfDayReminderForDate(afterNags, todayStr);
+        dispatch(editHabitAction({
+          id: habitId,
+          updates: {
+            queuedNotificationIds: afterEod.queuedNotificationIds,
+            queuedEodIds: afterEod.queuedEodIds,
+          },
+        }));
       } else {
-        // Un-marked complete! Turn the nags back on.
+        // Un-marked complete → turn reminders back on for today.
         const mergedHabit = { ...habit, completedToday: false, completionLog: { ...habit.completionLog, [todayStr]: false } };
-        const updatedHabit = await scheduleNaggingAlarms(mergedHabit);
-        if (updatedHabit.queuedNotificationIds) {
-          dispatch(editHabitAction({ id: habitId, updates: { queuedNotificationIds: updatedHabit.queuedNotificationIds } }));
-        }
+        const afterNags = await scheduleNaggingAlarms(mergedHabit);
+        const afterEod = await scheduleEndOfDayReminders(afterNags);
+        dispatch(editHabitAction({
+          id: habitId,
+          updates: {
+            queuedNotificationIds: afterEod.queuedNotificationIds,
+            queuedEodIds: afterEod.queuedEodIds,
+          },
+        }));
       }
     },
     [dispatch, habits],
@@ -72,13 +85,20 @@ export function useHabitStore() {
 
   const deleteHabit = useCallback(
     (habitId: string) => {
+      // Best-effort: cancel any scheduled reminders so a deleted habit can't
+      // keep firing "complete me" notifications. Fire-and-forget.
+      const habit = habits.find((h) => h.id === habitId);
+      if (habit) {
+        cancelAllAlarmsForHabit(habit).catch(() => {});
+        cancelAllEndOfDayReminders(habit).catch(() => {});
+      }
       dispatch(deleteHabitAction(habitId));
     },
-    [dispatch],
+    [dispatch, habits],
   );
 
   const editHabit = useCallback(
-    (habitId: string, updates: Partial<Pick<Habit, 'title' | 'description' | 'category' | 'frequency' | 'targetDaysPerWeek' | 'alarms' | 'queuedNotificationIds'>>) => {
+    (habitId: string, updates: Partial<Pick<Habit, 'title' | 'description' | 'category' | 'frequency' | 'targetDaysPerWeek' | 'alarms' | 'queuedNotificationIds' | 'queuedEodIds'>>) => {
       dispatch(editHabitAction({ id: habitId, updates }));
     },
     [dispatch],

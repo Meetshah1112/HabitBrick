@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, Platform } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Home, BarChart2, Plus, Trophy } from 'lucide-react-native';
+import { Home, BarChart2, Plus, Trophy, Castle } from 'lucide-react-native';
 import { COLORS, SHADOWS, SPACING } from '../constants/theme';
 import { useSelector } from 'react-redux';
 import type { RootState } from '../store/store';
@@ -10,6 +10,7 @@ import HomeScreen from '../screens/HomeScreen';
 import AddHabitScreen from '../screens/AddHabitScreen';
 import InsightsScreen from '../screens/InsightsScreen';
 import AchievementsScreen from '../screens/AchievementsScreen';
+import WorldScreen from '../screens/WorldScreen';
 import { selectHasNewBadges } from '../store/habitSlice';
 
 const Tab = createBottomTabNavigator();
@@ -34,6 +35,7 @@ export default function TabNavigator() {
           const stroke = focused ? 2.5 : 1.8;
           if (route.name === 'Home') return <Home size={26} color={iconColor} strokeWidth={stroke} />;
           if (route.name === 'Insights') return <BarChart2 size={26} color={iconColor} strokeWidth={stroke} />;
+          if (route.name === 'World') return <Castle size={26} color={iconColor} strokeWidth={stroke} />;
           if (route.name === 'Achievements') {
             return (
               <View>
@@ -54,6 +56,7 @@ export default function TabNavigator() {
       <Tab.Screen name="Home" component={HomeScreen} options={{ tabBarLabel: 'Home' }} />
       <Tab.Screen name="Insights" component={InsightsScreen} options={{ tabBarLabel: 'Insights' }} />
       <Tab.Screen name="AddHabit" component={AddHabitScreen} options={{ tabBarLabel: 'New' }} />
+      <Tab.Screen name="World" component={WorldScreen} options={{ tabBarLabel: 'World' }} />
       <Tab.Screen name="Achievements" component={AchievementsScreen} options={{ tabBarLabel: 'Badges' }} />
     </Tab.Navigator>
   );

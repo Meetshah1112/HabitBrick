@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Pressable, Alert, TextInput } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { User, X, Pencil, LogOut, RotateCcw, Flame, Database } from 'lucide-react-native';
+import { User, X, Pencil, RotateCcw, Flame, Database } from 'lucide-react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { COLORS, FONT_SIZES, SPACING, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import StickyNote from '../components/StickyNote';
@@ -249,21 +249,6 @@ export default function HomeScreen() {
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={styles.modalButton}
-                    onPress={async () => {
-                      await AsyncStorage.removeItem('@atomicstep/isLoggedIn');
-                      setShowProfileModal(false);
-                      navigation.reset({
-                        index: 0,
-                        routes: [{ name: 'SignIn' }],
-                      });
-                    }}
-                  >
-                    <LogOut size={24} color={COLORS.textPrimary} strokeWidth={2} />
-                    <Text style={styles.modalButtonText}>Log Out</Text>
-                  </TouchableOpacity>
-                  
-                  <TouchableOpacity 
                     style={[styles.modalButton, styles.dangerButton]}
                     onPress={() => Alert.alert(
                       'Reset Progress',

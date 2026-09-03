@@ -98,6 +98,12 @@ if (!IS_EXPO_GO) {
 const HISTORY_KEY_PREFIX = '@atomicstep/notif_history/';
 const HISTORY_DEPTH = 3; // number of recent messages to avoid repeating
 
+// End-of-day "last chance" reminder — fires a few hours before midnight for any
+// scheduled habit that is still incomplete. Independent of user-set alarms.
+const EOD_REMINDER_HOUR = 21; // 9 PM
+const EOD_REMINDER_MINUTE = 0;
+const EOD_LOOKAHEAD_DAYS = 3; // schedule today + next 2 days
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -437,17 +443,152 @@ export async function fireCompletionNotification(habit: Habit): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// End-of-day "last chance" reminder
+// ---------------------------------------------------------------------------
+
+const EOD_MESSAGES = [
+  "Only a few hours left in the day. Don't let this one slip. ⏳",
+  "The day's almost over — finish strong before midnight. 🌙",
+  "Last call! Complete this before the day ends and keep your streak alive. 🔥",
+  "A few hours left. Future-you will be glad you didn't skip today.",
+  "Day's winding down. One quick action and it's done. ✅",
+];
+
+function pickEodMessage(): string {
+  return EOD_MESSAGES[Math.floor(Math.random() * EOD_MESSAGES.length)];
+}
+
 /**
- * Re-schedule all active habits that have alarms set.
- * Used on app launch — skips completed habits (default behavior).
+ * Schedule a single evening "last chance" reminder for each upcoming scheduled
+ * day a habit is still incomplete. Skips habits that already have user alarms
+ * (those get their own urgent end-of-day nags from the nagging engine).
+ *
+ * Returns a new Habit with queuedEodIds populated so the IDs can later be
+ * cancelled (e.g. once the habit is completed).
+ */
+export async function scheduleEndOfDayReminders(habit: Habit): Promise<Habit> {
+  const updatedHabit = { ...habit };
+  if (!updatedHabit.queuedEodIds) updatedHabit.queuedEodIds = {};
+
+  // Habits with explicit alarms already receive urgent 22:00–23:30 nags.
+  if (IS_EXPO_GO || (habit.alarms && habit.alarms.length > 0)) return updatedHabit;
+
+  const Notifications = getNotifications();
+  const now = new Date();
+
+  for (let offset = 0; offset < EOD_LOOKAHEAD_DAYS; offset++) {
+    const targetDate = new Date(now);
+    targetDate.setDate(targetDate.getDate() + offset);
+    const dateStr =
+      targetDate.getFullYear() +
+      '-' + String(targetDate.getMonth() + 1).padStart(2, '0') +
+      '-' + String(targetDate.getDate()).padStart(2, '0');
+
+    // Already scheduled for this date → don't duplicate.
+    if (updatedHabit.queuedEodIds[dateStr] && updatedHabit.queuedEodIds[dateStr].length > 0) {
+      continue;
+    }
+
+    // Only on scheduled days, and only if still incomplete.
+    const dayOfWeek = targetDate.getDay() === 0 ? 6 : targetDate.getDay() - 1;
+    if (!habit.frequency[dayOfWeek]) continue;
+    if (habit.completionLog[dateStr]) continue;
+
+    const triggerDate = new Date(targetDate);
+    triggerDate.setHours(EOD_REMINDER_HOUR, EOD_REMINDER_MINUTE, 0, 0);
+    if (triggerDate <= now) continue; // evening already passed today
+
+    try {
+      const identifier = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: `⏳ Last chance: ${habit.title}`,
+          body: pickEodMessage(),
+          data: { habitId: habit.id, dateStr, kind: 'eod' },
+          sound: 'default',
+          vibrate: [0, 250, 250, 250],
+          categoryIdentifier: 'HABIT_ALARM',
+          priority: 'max',
+        },
+        trigger: buildDateTrigger(triggerDate),
+      });
+      updatedHabit.queuedEodIds[dateStr] = [identifier];
+    } catch (e) {
+      console.warn('Failed scheduling end-of-day reminder:', e);
+    }
+  }
+
+  return updatedHabit;
+}
+
+/**
+ * Cancel the end-of-day reminder for a specific date (e.g. once completed).
+ */
+export async function cancelEndOfDayReminderForDate(habit: Habit, dateStr: string): Promise<Habit> {
+  const updatedHabit = { ...habit };
+  if (!updatedHabit.queuedEodIds || !updatedHabit.queuedEodIds[dateStr]) {
+    return updatedHabit;
+  }
+
+  if (!IS_EXPO_GO) {
+    try {
+      const Notifications = getNotifications();
+      for (const id of updatedHabit.queuedEodIds[dateStr]) {
+        await Notifications.cancelScheduledNotificationAsync(id);
+      }
+    } catch (e) {
+      console.warn('Error cancelling end-of-day reminder', e);
+    }
+  }
+
+  updatedHabit.queuedEodIds = { ...updatedHabit.queuedEodIds, [dateStr]: [] };
+  return updatedHabit;
+}
+
+/**
+ * Cancel ALL end-of-day reminders for a habit (e.g. on delete).
+ */
+export async function cancelAllEndOfDayReminders(habit: Habit): Promise<Habit> {
+  const updatedHabit = { ...habit };
+  if (!updatedHabit.queuedEodIds) return updatedHabit;
+
+  if (!IS_EXPO_GO) {
+    const Notifications = getNotifications();
+    for (const dateStr of Object.keys(updatedHabit.queuedEodIds)) {
+      for (const id of updatedHabit.queuedEodIds[dateStr]) {
+        try {
+          await Notifications.cancelScheduledNotificationAsync(id);
+        } catch (e) {}
+      }
+    }
+  }
+
+  updatedHabit.queuedEodIds = {};
+  return updatedHabit;
+}
+
+/**
+ * Re-schedule all active habits on app launch.
+ *  - Habits WITH alarms  → nagging engine (includes urgent EOD nags).
+ *  - Habits WITHOUT alarms → single end-of-day "last chance" reminder.
+ *
+ * Returns the habits whose queued IDs changed so the caller can persist them
+ * (needed so reminders can be cancelled on completion).
  */
 export async function rescheduleAllHabitNotifications(
   habits: Habit[],
-): Promise<void> {
-  if (IS_EXPO_GO) return;
+): Promise<Habit[]> {
+  if (IS_EXPO_GO) return [];
+
+  const updated: Habit[] = [];
   for (const habit of habits) {
+    let next = habit;
     if (habit.alarms && habit.alarms.length > 0) {
-      await scheduleNaggingAlarms(habit, false);
+      next = await scheduleNaggingAlarms(next, false);
+    } else {
+      next = await scheduleEndOfDayReminders(next);
     }
+    if (next !== habit) updated.push(next);
   }
+  return updated;
 }

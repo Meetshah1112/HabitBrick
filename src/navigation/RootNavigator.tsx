@@ -1,8 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus, View, ActivityIndicator } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import SignInScreen from '../screens/SignInScreen';
-import SignUpScreen from '../screens/SignUpScreen';
 import TabNavigator from './TabNavigator';
 import HabitDetailScreen from '../screens/HabitDetailScreen';
 import StreakCelebrationScreen from '../screens/StreakCelebrationScreen';
@@ -12,7 +10,7 @@ import { RootStackParamList } from './types';
 import { requestNotificationPermissions, rescheduleAllHabitNotifications } from '../api/notificationService';
 import { useSelector, useDispatch } from 'react-redux';
 import type { RootState, AppDispatch } from '../store/store';
-import { rehydrateDay, getLocalDateStr } from '../store/habitSlice';
+import { rehydrateDay, getLocalDateStr, editHabit } from '../store/habitSlice';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -22,26 +20,43 @@ export default function RootNavigator() {
   const habits = useSelector((s: RootState) => s.habits.habits);
   const isLoaded = useSelector((s: RootState) => s.habits.isLoaded);
 
-  const [initialRoute, setInitialRoute] = useState<keyof RootStackParamList | null>(null);
+  // We always boot into Welcome. isNewUser controls whether the splash
+  // routes the user to AddHabit (first launch) or straight to Tabs (returning).
+  const [bootState, setBootState] = useState<{ ready: boolean; isNewUser: boolean }>({
+    ready: false,
+    isNewUser: false,
+  });
 
   useEffect(() => {
-    const checkLogin = async () => {
+    const initFirstLaunch = async () => {
+      // Legacy migration: copy over the old key if present.
       let res = await AsyncStorage.getItem('@atomicstep/isLoggedIn');
       if (!res) {
-        res = await AsyncStorage.getItem('@habitflow/isLoggedIn');
-        if (res) await AsyncStorage.setItem('@atomicstep/isLoggedIn', res);
+        const legacy = await AsyncStorage.getItem('@habitflow/isLoggedIn');
+        if (legacy) {
+          await AsyncStorage.setItem('@atomicstep/isLoggedIn', legacy);
+          res = legacy;
+        }
       }
 
-      // Migration: Set creation date if missing
+      // Treat the absence of the flag as "first ever launch" — the only place
+      // we still distinguish new vs returning. There's no auth anymore, so we
+      // set the flag immediately to avoid showing the new-user route twice.
+      const isFirstLaunch = res !== 'true';
+      if (isFirstLaunch) {
+        await AsyncStorage.setItem('@atomicstep/isLoggedIn', 'true');
+      }
+
+      // Stamp creation date once.
       const creationDate = await AsyncStorage.getItem('@atomicstep/accountCreatedAt');
       if (!creationDate) {
         const today = new Date().toISOString().split('T')[0];
         await AsyncStorage.setItem('@atomicstep/accountCreatedAt', today);
       }
 
-      setInitialRoute(res === 'true' ? 'Welcome' : 'SignIn');
+      setBootState({ ready: true, isNewUser: isFirstLaunch });
     };
-    checkLogin().catch(() => setInitialRoute('SignIn'));
+    initFirstLaunch().catch(() => setBootState({ ready: true, isNewUser: false }));
   }, []);
 
   // Track the last-known calendar date so we can detect midnight rollovers
@@ -62,17 +77,30 @@ export default function RootNavigator() {
     return () => sub.remove();
   }, [dispatch]);
 
-  // Request permissions & reschedule all saved notifications after data loads
+  // Request permissions & reschedule all saved notifications after data loads.
+  // Persist any newly-queued reminder IDs so they can be cancelled on completion.
   useEffect(() => {
     if (!isLoaded) return;
-    requestNotificationPermissions().then((granted) => {
-      if (granted) {
-        rescheduleAllHabitNotifications(habits).catch(() => {});
+    requestNotificationPermissions().then(async (granted) => {
+      if (!granted) return;
+      try {
+        const updated = await rescheduleAllHabitNotifications(habits);
+        for (const h of updated) {
+          dispatch(editHabit({
+            id: h.id,
+            updates: {
+              queuedNotificationIds: h.queuedNotificationIds,
+              queuedEodIds: h.queuedEodIds,
+            },
+          }));
+        }
+      } catch {
+        // non-critical — reminders just won't be pre-scheduled this launch
       }
     });
   }, [isLoaded]); // Only run once after initial load
 
-  if (!initialRoute) {
+  if (!bootState.ready) {
     return (
       <View style={{ flex: 1, backgroundColor: '#FFF4EB', justifyContent: 'center', alignItems: 'center' }}>
         <ActivityIndicator size="large" color="#FF9A62" />
@@ -81,16 +109,14 @@ export default function RootNavigator() {
   }
 
   return (
-    <Stack.Navigator screenOptions={{ headerShown: false }} initialRouteName={initialRoute}>
-      <Stack.Screen name="SignIn" component={SignInScreen} />
-      <Stack.Screen name="SignUp" component={SignUpScreen} />
-      <Stack.Screen name="Tabs" component={TabNavigator} />
+    <Stack.Navigator screenOptions={{ headerShown: false }} initialRouteName="Welcome">
       <Stack.Screen
         name="Welcome"
         component={WelcomeScreen}
         options={{ animation: 'fade', gestureEnabled: false }}
-        initialParams={{ isNewUser: false }}
+        initialParams={{ isNewUser: bootState.isNewUser }}
       />
+      <Stack.Screen name="Tabs" component={TabNavigator} />
       <Stack.Screen
         name="HabitDetail"
         component={HabitDetailScreen}
