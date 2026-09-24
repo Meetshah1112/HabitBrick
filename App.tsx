@@ -5,6 +5,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Provider, useDispatch } from 'react-redux';
 import { store, AppDispatch } from './src/store/store';
 import { loadData, toggleHabit, editHabit } from './src/store/habitSlice';
+import { loadSyncState } from './src/store/syncSlice';
 import RootNavigator from './src/navigation/RootNavigator';
 import { cancelNaggingAlarmsForDate, IS_EXPO_GO } from './src/api/notificationService';
 
@@ -13,6 +14,8 @@ function AppInner() {
 
   useEffect(() => {
     dispatch(loadData());
+    // Before any edit can be recorded: the sync listener waits for this.
+    dispatch(loadSyncState());
 
     // In Expo Go (SDK 53+) the notifications module is stripped — skip entirely.
     // In a dev build or APK this runs normally.

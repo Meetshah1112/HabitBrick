@@ -7,7 +7,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web --port 8081",
-    "db:test": "node supabase/tests/rls.test.mjs",
+    "db:test": "node supabase/tests/rls.test.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning --import ./supabase/tests/ts-resolve.mjs supabase/tests/sync.integration.test.mjs",
     "test": "jest"
   },
   "dependencies": {
@@ -52,6 +52,10 @@
     "preset": "jest-expo",
     "testMatch": [
       "<rootDir>/src/**/__tests__/**/*.test.ts?(x)"
+    ],
+    "transformIgnorePatterns": [
+      "/node_modules/(?!(.pnpm|react-native|@react-native|@react-native-community|expo|@expo|@expo-google-fonts|react-navigation|@react-navigation|@sentry/react-native|native-base|immer))",
+      "/node_modules/react-native-reanimated/plugin/"
     ]
   }
 }

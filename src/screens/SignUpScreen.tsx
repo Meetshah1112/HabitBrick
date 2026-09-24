@@ -24,7 +24,7 @@ import {
 import { useDispatch } from 'react-redux';
 import { signUp, isUsernameAvailable, validateUsername } from '../api/authService';
 import type { AppDispatch } from '../store/store';
-import { refreshBackupStatus } from '../store/backupSlice';
+import { refreshSyncStatus } from '../store/syncSlice';
 import { getLegacyEmailHint } from '../api/legacyCredentialPurge';
 import NoticeBanner, { type Notice } from '../components/NoticeBanner';
 import { getPasswordStrength } from '../utils/passwordStrength';
@@ -175,8 +175,8 @@ export default function SignUpScreen() {
     // Signed in immediately (email confirmation disabled on the project).
 
     // Unclaimed habits on this device: ask before anything is uploaded.
-    const backupCheck = await dispatch(refreshBackupStatus(result.data.userId));
-    const decision = refreshBackupStatus.fulfilled.match(backupCheck)
+    const backupCheck = await dispatch(refreshSyncStatus(result.data.userId));
+    const decision = refreshSyncStatus.fulfilled.match(backupCheck)
       ? backupCheck.payload?.decision
       : null;
     if (decision === 'needsConsent') {

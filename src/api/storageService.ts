@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Habit, Badge } from '../types';
+import { SYNC_STATE_KEY, serialiseSyncState, type PersistedSyncState } from '../sync/syncStorage';
 
 const HABITS_KEY = '@atomicstep/habits';
 const BADGES_KEY = '@atomicstep/badges';
@@ -39,13 +40,32 @@ export const storageService = {
     await AsyncStorage.setItem(BADGES_KEY, JSON.stringify(badges));
   },
 
+  /** Habits, badges and (once loaded) the sync outbox, in one atomic write. */
+  async persistSnapshot(snapshot: {
+    habits: Habit[];
+    badges: Badge[];
+    syncState: PersistedSyncState | null;
+  }): Promise<void> {
+    const entries: [string, string][] = [
+      [HABITS_KEY, JSON.stringify(snapshot.habits)],
+      [BADGES_KEY, JSON.stringify(snapshot.badges)],
+    ];
+    if (snapshot.syncState) entries.push([SYNC_STATE_KEY, serialiseSyncState(snapshot.syncState)]);
+    await AsyncStorage.multiSet(entries);
+  },
+
   async clearAll(): Promise<void> {
     await AsyncStorage.multiRemove([HABITS_KEY, BADGES_KEY]);
   },
 
-  async resetAllAppData(): Promise<void> {
+  /**
+   * `preserve` keeps specific keys through the wipe. A signed-in reset keeps
+   * the sync claim and outbox so the deletions it queues can reach the server.
+   */
+  async resetAllAppData(options: { preserve?: string[] } = {}): Promise<void> {
     const keys = await AsyncStorage.getAllKeys();
-    const atomicKeys = keys.filter(k => k.startsWith('@atomicstep/'));
+    const keep = new Set(options.preserve ?? []);
+    const atomicKeys = keys.filter(k => k.startsWith('@atomicstep/') && !keep.has(k));
     // We might want to keep some system keys like isLoggedIn if we just want to reset progress,
     // but the user said "behave like a new user" and "directed to AddHabit".
     // I will remove everything, including username and accountCreatedAt,

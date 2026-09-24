@@ -21,7 +21,7 @@ import { Mail, Lock, Eye, EyeOff, ArrowRight, X } from 'lucide-react-native';
 import { useDispatch } from 'react-redux';
 import { signIn, sendPasswordReset } from '../api/authService';
 import type { AppDispatch } from '../store/store';
-import { refreshBackupStatus } from '../store/backupSlice';
+import { refreshSyncStatus } from '../store/syncSlice';
 import { getLegacyEmailHint } from '../api/legacyCredentialPurge';
 import NoticeBanner, { type Notice } from '../components/NoticeBanner';
 
@@ -84,8 +84,8 @@ export default function SignInScreen() {
     }
 
     // Unclaimed habits on this device: ask before anything is uploaded.
-    const backupCheck = await dispatch(refreshBackupStatus(result.data));
-    const decision = refreshBackupStatus.fulfilled.match(backupCheck)
+    const backupCheck = await dispatch(refreshSyncStatus(result.data));
+    const decision = refreshSyncStatus.fulfilled.match(backupCheck)
       ? backupCheck.payload?.decision
       : null;
     if (decision === 'needsConsent') {

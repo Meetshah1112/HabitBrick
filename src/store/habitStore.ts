@@ -16,18 +16,14 @@ import {
   toggleHabit as toggleHabitAction,
   deleteHabit as deleteHabitAction,
   editHabit as editHabitAction,
-  getLocalDateStr,
 } from './habitSlice';
 import type { Habit } from '../types';
 import {
   scheduleNaggingAlarms,
-  cancelNaggingAlarmsForDate,
   cancelAllAlarmsForHabit,
   fireAlarmConfirmation,
-  scheduleEndOfDayReminders,
-  cancelEndOfDayReminderForDate,
-  cancelAllEndOfDayReminders,
 } from '../api/notificationService';
+import { syncTodayReminders, cancelAllReminders } from '../api/reminderSync';
 
 export function useHabitStore() {
   const dispatch = useDispatch<AppDispatch>();
@@ -49,36 +45,14 @@ export function useHabitStore() {
       if (!habit) return;
 
       const newCompleted = !habit.completedToday;
-      
+
       // Dispatch original sync action for immediate UI update
       dispatch(toggleHabitAction(habitId));
 
-      const todayStr = getLocalDateStr();
-
-      if (newCompleted) {
-        // Marked complete → silence today's reminders (alarm nags + EOD nudge).
-        const afterNags = await cancelNaggingAlarmsForDate(habit, todayStr);
-        const afterEod = await cancelEndOfDayReminderForDate(afterNags, todayStr);
-        dispatch(editHabitAction({
-          id: habitId,
-          updates: {
-            queuedNotificationIds: afterEod.queuedNotificationIds,
-            queuedEodIds: afterEod.queuedEodIds,
-          },
-        }));
-      } else {
-        // Un-marked complete → turn reminders back on for today.
-        const mergedHabit = { ...habit, completedToday: false, completionLog: { ...habit.completionLog, [todayStr]: false } };
-        const afterNags = await scheduleNaggingAlarms(mergedHabit);
-        const afterEod = await scheduleEndOfDayReminders(afterNags);
-        dispatch(editHabitAction({
-          id: habitId,
-          updates: {
-            queuedNotificationIds: afterEod.queuedNotificationIds,
-            queuedEodIds: afterEod.queuedEodIds,
-          },
-        }));
-      }
+      // Done → silence today's reminders (alarm nags + EOD nudge);
+      // un-done → turn them back on. Shared with sync (api/reminderSync.ts).
+      const reminderIds = await syncTodayReminders(habit, newCompleted);
+      dispatch(editHabitAction({ id: habitId, updates: reminderIds }));
     },
     [dispatch, habits],
   );
@@ -88,10 +62,7 @@ export function useHabitStore() {
       // Best-effort: cancel any scheduled reminders so a deleted habit can't
       // keep firing "complete me" notifications. Fire-and-forget.
       const habit = habits.find((h) => h.id === habitId);
-      if (habit) {
-        cancelAllAlarmsForHabit(habit).catch(() => {});
-        cancelAllEndOfDayReminders(habit).catch(() => {});
-      }
+      if (habit) cancelAllReminders(habit).catch(() => {});
       dispatch(deleteHabitAction(habitId));
     },
     [dispatch, habits],

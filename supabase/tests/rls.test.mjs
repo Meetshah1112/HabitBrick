@@ -6,31 +6,20 @@
 //
 // Every file in supabase/migrations is applied in name order, so a new
 // migration is covered automatically. Add a check here for any new policy.
-import { PGlite } from '@electric-sql/pglite';
-import { citext } from '@electric-sql/pglite/contrib/citext';
-import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
-import { readFileSync, readdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createDatabase, as as asUser, createReporter } from './pgHarness.mjs';
 
-const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const MIGRATIONS = readdirSync(join(REPO, 'supabase', 'migrations'))
-  .filter((f) => f.endsWith('.sql'))
-  .sort()
-  .map((f) => 'supabase/migrations/' + f);
-const db = new PGlite({ extensions: { citext, pgcrypto } });
+const { pass, fail, check, finish } = createReporter();
 
-let passed = 0, failed = 0;
-const pass = (l) => { passed++; console.log('  PASS ' + l); };
-const fail = (l, why) => { failed++; console.log('  FAIL ' + l + ' -- ' + why); };
-const check = (l, cond, why) => (cond ? pass(l) : fail(l, why));
-
-async function as(uid, fn) {
-  await db.exec('reset role');
-  await db.query("select set_config('request.jwt.claim.sub', $1, false)", [uid ?? '']);
-  await db.exec(uid ? 'set role authenticated' : 'set role anon');
-  try { return await fn(); } finally { await db.exec('reset role'); }
+console.log('\n== Apply migrations ==');
+let db;
+try {
+  db = await createDatabase({ onApplied: pass, onFailed: (file, e) => fail(file, e.message) });
+} catch {
+  console.log('\nAborting: migrations must apply cleanly.');
+  process.exit(1);
 }
+
+const as = (uid, fn) => asUser(db, uid, fn);
 async function expectError(label, fn, pattern) {
   try { await fn(); fail(label, 'expected an error, statement succeeded'); }
   catch (e) {
@@ -39,19 +28,6 @@ async function expectError(label, fn, pattern) {
   }
 }
 const rows = async (sql, params = []) => (await db.query(sql, params)).rows;
-
-// ---------------------------------------------------------------- migrations
-console.log('\n== Apply migrations ==');
-for (const file of ['supabase/_local_test_stub.sql', ...MIGRATIONS]) {
-  try { await db.exec(readFileSync(join(REPO, file), 'utf8')); pass(file); }
-  catch (e) { fail(file, e.message); console.log('\nAborting: migrations must apply cleanly.'); process.exit(1); }
-}
-// Mimic Supabase defaults: API roles get table privileges; RLS does the restricting.
-await db.exec(`
-  grant usage on schema public, auth to anon, authenticated;
-  grant all on all tables in schema public to anon, authenticated;
-  grant all on all sequences in schema public to anon, authenticated;
-`);
 
 // ------------------------------------------------------------------- signup
 console.log('\n== Signup trigger ==');
@@ -146,5 +122,94 @@ const found = await as(C, () => rows("select username from public.search_profile
 check('search_profiles prefix match works for signed-in users', found.length === 1 && found[0].username === 'alice', JSON.stringify(found));
 check('search_profiles refuses <3 chars', (await as(C, () => rows("select * from public.search_profiles('al')"))).length === 0, 'returned rows');
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+// ---------------------------------------------------- two-way sync (0006)
+console.log('\n== Two-way sync: sync_push / sync_pull ==');
+const D = '55555555-5555-5555-5555-555555555555';
+await db.query('insert into auth.users (id, email, raw_user_meta_data) values ($1, $2, $3)',
+  [D, 'dave@example.com', JSON.stringify({ username: 'dave' })]);
+
+const T = (minute) => `2026-09-20T10:${String(minute).padStart(2, '0')}:00.000Z`;
+const syncHabit = (local_id, title, clock, extra = {}) => ({
+  local_id, title, description: null, category: 'reading',
+  frequency: [true, true, true, true, true, false, false], target_days_per_week: 5,
+  created_at: '2026-09-01', client_updated_at: clock, ...extra,
+});
+const syncDay = (local_id, day, done, clock) => ({
+  local_id, completed_on: day, done, completed_at: done ? clock : null, client_updated_at: clock,
+});
+const push = async (uid, habits, completions) => (await as(uid, () => db.query(
+  'select public.sync_push($1::jsonb, $2::jsonb) as r', [JSON.stringify(habits), JSON.stringify(completions)]))).rows[0].r;
+const pull = async (uid, since) => (await as(uid, () => db.query(
+  'select public.sync_pull($1::timestamptz) as r', [since]))).rows[0].r;
+const day = (p, id, d) => p.completions.find((c) => c.local_id === id && c.completed_on === d);
+
+let r = await push(D, [syncHabit('d1', 'Run', T(1))], [syncDay('d1', '2026-09-19', true, T(1)), syncDay('d1', '2026-09-20', true, T(1))]);
+check('push writes a habit and its completions', r.habits_written === 1 && r.completions_written === 2, JSON.stringify(r));
+let p = await pull(D, null);
+check('full pull returns them', p.habits.length === 1 && p.completions.length === 2 && !!p.server_time, JSON.stringify(p));
+
+await push(D, [syncHabit('d1', 'Run 5k', T(5))], []);
+await push(D, [syncHabit('d1', 'Stale title', T(3))], []);
+p = await pull(D, null);
+check('an older edit loses to a newer one (last writer wins)', p.habits[0].title === 'Run 5k', p.habits[0].title);
+
+await push(D, [], [syncDay('d1', '2026-09-20', false, T(6))]);
+await push(D, [], [syncDay('d1', '2026-09-20', true, T(4))]);
+p = await pull(D, null);
+check('an un-completion survives a stale completion arriving later',
+  day(p, 'd1', '2026-09-20')?.done === false && day(p, 'd1', '2026-09-20')?.completed_at === null,
+  JSON.stringify(day(p, 'd1', '2026-09-20')));
+
+await push(D, [{ local_id: 'd1', deleted: true, client_updated_at: T(7) }], []);
+await push(D, [syncHabit('d1', 'Resurrected?', T(9))], []);
+p = await pull(D, null);
+check('a deleted habit stays deleted even after a newer edit',
+  p.habits[0].deleted_at !== null && p.habits[0].title === 'Run 5k', JSON.stringify(p.habits[0]));
+check('completions of a deleted habit are no longer pulled', p.completions.length === 0, JSON.stringify(p.completions));
+r = await push(D, [{ local_id: 'never-synced', deleted: true, client_updated_at: T(8) }], []);
+check('deleting a habit the server never saw is a harmless no-op', r.habits_deleted === 0, JSON.stringify(r));
+
+r = await push(D, [
+  syncHabit('d2', 'Good habit', T(10)),
+  syncHabit('d3', 'Bad frequency', T(10), { frequency: [true] }),
+  syncHabit('d4', 'Infinite clock', 'infinity'),
+  syncHabit('d4b', 'Word clock', 'now'),
+], [
+  syncDay('d2', '2026-02-30', true, T(10)),
+  syncDay('d2', '2026-09-18', true, 'not-a-time'),
+  syncDay('d2', '2026-09-17', true, T(10)),
+  syncDay('ghost', '2026-09-17', true, T(10)),
+]);
+check('bad rows are skipped one by one; the rest of the batch still lands',
+  r.habits_written === 1 && r.completions_written === 1, JSON.stringify(r));
+
+r = await push(D, [syncHabit('d5', 'Dup', T(11)), syncHabit('d5', 'Dup newer', T(12))],
+  [syncDay('d2', '2026-09-16', true, T(11)), syncDay('d2', '2026-09-16', false, T(12))]);
+p = await pull(D, null);
+check('duplicate keys in one batch keep the newest and do not error',
+  r.habits_written === 1 && r.completions_written === 1 &&
+  p.habits.find((h) => h.local_id === 'd5')?.title === 'Dup newer' && day(p, 'd2', '2026-09-16')?.done === false,
+  JSON.stringify(r));
+
+const cursor = (await pull(D, null)).server_time;
+await push(D, [syncHabit('d6', 'Later', T(20))], []);
+p = await pull(D, cursor);
+check('incremental pull returns only what changed since the cursor',
+  p.habits.map((h) => h.local_id).join() === 'd6' && p.completions.length === 0, JSON.stringify(p));
+
+await push(A, [syncHabit('d2', 'Alice overwrite attempt', T(59), { user_id: D })], [syncDay('d2', '2026-09-17', false, T(59))]);
+p = await pull(D, null);
+check("another user pushing the same local_id cannot touch dave's data",
+  p.habits.find((h) => h.local_id === 'd2')?.title === 'Good habit' && day(p, 'd2', '2026-09-17')?.done === true,
+  JSON.stringify(p.habits.find((h) => h.local_id === 'd2')));
+check("dave's rows never appear in alice's pull",
+  !(await pull(A, null)).habits.some((h) => h.title === 'Good habit'), 'leak');
+await expectError('anon cannot call sync_push',
+  () => as(null, () => db.query("select public.sync_push('[]'::jsonb, '[]'::jsonb)")), /permission denied/i);
+await expectError('anon cannot call sync_pull',
+  () => as(null, () => db.query('select public.sync_pull(null)')), /permission denied/i);
+
+const daveBoard = await as(D, () => rows("select bricks from public.friends_leaderboard('2026-01-01')"));
+check('leaderboard counts only done completions of habits that still exist',
+  daveBoard.length === 1 && Number(daveBoard[0].bricks) === 1, JSON.stringify(daveBoard));
+finish();

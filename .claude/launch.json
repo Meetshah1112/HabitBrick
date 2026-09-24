@@ -4,8 +4,22 @@
     {
       "name": "habitflow-dev",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["expo", "start", "--web", "--port", "8081"],
+      "runtimeArgs": [
+        "expo",
+        "start",
+        "--web",
+        "--port",
+        "8081"
+      ],
       "port": 8081
+    },
+    {
+      "name": "local-sync-test-server",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "supabase/tests/localSyncServer.mjs"
+      ],
+      "port": 54321
     }
   ]
 }

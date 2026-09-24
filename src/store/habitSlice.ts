@@ -9,56 +9,10 @@ import { fireCompletionNotification } from '../api/notificationService';
 
 const generateId = () => Math.random().toString(36).substring(2, 15);
 
-/** Local-timezone date string (YYYY-MM-DD) — avoids UTC midnight edge-case. */
-export function getLocalDateStr(date: Date = new Date()): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-/**
- * Walk backwards from today through the completionLog and count consecutive
- * scheduled days that were completed. Today is skipped if not yet completed
- * (so the streak doesn't break mid-day).
- */
-export function calculateStreak(
-  completionLog: Record<string, boolean | string>,
-  frequency: boolean[],
-): number {
-  const now = new Date();
-  const todayStr = getLocalDateStr(now);
-  let streak = 0;
-
-  // Walk backwards up to 2 years
-  for (let i = 0; i < 730; i++) {
-    const date = new Date(now);
-    date.setDate(now.getDate() - i);
-    const dateStr = getLocalDateStr(date);
-    const dayOfWeek = date.getDay() === 0 ? 6 : date.getDay() - 1; // Mon=0
-
-    if (dateStr === todayStr) {
-      // Today: count if completed regardless of whether it is a scheduled day.
-      // This ensures marking a habit on an off-schedule day still shows streak >= 1.
-      if (completionLog[dateStr]) streak++;
-      // Always continue — never break on today
-      continue;
-    }
-
-    // Past days: only scheduled days matter for the streak chain
-    if (!frequency[dayOfWeek]) {
-      continue; // unscheduled day — skip without breaking
-    }
-
-    if (completionLog[dateStr]) {
-      streak++;
-    } else {
-      break; // missed a past scheduled day — streak broken
-    }
-  }
-
-  return streak;
-}
+// Pure date/streak helpers now live in utils/streaks.ts; re-exported here so
+// existing `from '../store/habitSlice'` imports keep working.
+export { getLocalDateStr, calculateStreak } from '../utils/streaks';
+import { getLocalDateStr, calculateStreak } from '../utils/streaks';
 
 // ---------------------------------------------------------------------------
 // Initial / default data (used on very first launch only)
@@ -430,6 +384,17 @@ const habitSlice = createSlice({
       });
     },
 
+    /**
+     * Install the result of a sync merge (computed by sync/mergeRemote.ts).
+     * Not recorded in the outbox — see store/syncListener.ts — or every pulled
+     * change would be echoed straight back to the server.
+     */
+    applyRemoteChanges(state, action: PayloadAction<{ habits: Habit[] }>) {
+      state.habits = action.payload.habits;
+      // Merged history from another device can unlock badges here too.
+      evaluateBadges(state);
+    },
+
     resetProgress(state) {
       state.habits = [];
       state.badges = JSON.parse(JSON.stringify(INITIAL_BADGES));
@@ -457,6 +422,7 @@ export const {
   dismissNewBadge,
   markBadgesSeen,
   resetProgress,
+  applyRemoteChanges,
 } = habitSlice.actions;
 
 export const selectHasNewBadges = (state: any) => 

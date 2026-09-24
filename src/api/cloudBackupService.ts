@@ -1,42 +1,44 @@
 /**
- * Cloud backup — the one-time, non-destructive migration of this device's
- * local habits into the signed-in account (Phase 3).
+ * Device claim and consent — who may sync this device's habits.
  *
- * Non-destructive: nothing local is ever deleted or modified. AsyncStorage
- * stays the source of truth; this only copies it up.
+ * Local data belongs to the DEVICE, not to whoever is signed in (signing out
+ * keeps habits on the phone). The first account to back up this device's data
+ * "claims" it, the first upload always needs explicit consent, and only the
+ * claiming account ever syncs it. See utils/backupDecision.ts.
  *
- * Safety rules are enforced HERE, not only in the UI, so no future caller can
- * bypass them:
- *   1. Never upload a device claimed by a different account (shared phones).
+ * Phase 3 uploaded here directly. As of Phase 4 every write goes through the
+ * sync engine (src/sync/), so there is exactly ONE path to the server and it
+ * is the one that respects last-writer-wins; a second, non-LWW upload path
+ * could overwrite newer edits made on another device.
+ *
+ * Safety rules are enforced HERE, not only in the UI:
+ *   1. Never sync a device claimed by a different account (shared phones).
  *   2. Never make the first upload without explicit consent.
- *   3. Re-check the live session right before uploading, so an account switch
- *      mid-flight cannot send one person's data into another's account.
- *      (RLS would reject a mismatched user_id anyway; this fails earlier and
- *      with a clearer message.)
- *
- * Scope note for Phase 4: re-running a backup pushes new and edited habits
- * and new completions, but NOT deletions or un-completions — the upserts
- * never remove rows. Nothing reads cloud data back yet, so this is invisible
- * today; two-way sync must reconcile removals before anything is pulled.
+ *   3. Re-check the live session before claiming or syncing.
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { getCurrentUserId } from './authService';
-import { runUpload, type BackupGateway, type UploadReport } from './backupUploader';
-import { buildBackupPlan } from '../utils/backupPlan';
 import { decideBackup, type BackupDecision, type CloudClaim } from '../utils/backupDecision';
+import { buildFullOutbox, type Outbox } from '../sync/outbox';
 import type { Habit } from '../types';
 
-/** Removed by "Reset Progress" along with every other @atomicstep/ key. */
-const CLAIM_KEY = '@atomicstep/cloudClaim';
+/** Removed by "Reset Progress" unless the reset is also erasing the cloud copy. */
+export const CLAIM_KEY = '@atomicstep/cloudClaim';
 
 export type BackupRefusal = 'unavailable' | 'otherOwner' | 'needsConsent' | 'sessionChanged';
 
-export type BackupResult =
-  | { ok: true; data: { report: UploadReport; claim: CloudClaim; skippedHabits: number; skippedEntries: number } }
-  | { ok: false; error: string; refusal?: BackupRefusal; claim?: CloudClaim | null };
+const REFUSAL_MESSAGES: Record<BackupRefusal, string> = {
+  unavailable: 'Sync is not available in this version of the app.',
+  otherOwner: "This phone's habits are already backed up to a different account.",
+  needsConsent: 'Confirm the backup first.',
+  sessionChanged: 'The signed-in account changed. Sign in again to sync.',
+};
+
+export function refusalMessage(refusal: BackupRefusal): string {
+  return REFUSAL_MESSAGES[refusal];
+}
 
 // ---------------------------------------------------------------------------
 // Claim storage — parsed defensively; a corrupt record reads as "unclaimed",
@@ -75,48 +77,13 @@ async function writeClaim(claim: CloudClaim): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Supabase gateway
-// ---------------------------------------------------------------------------
-
-function friendlyBackupError(raw: string): string {
-  const message = raw.toLowerCase();
-  if (message.includes('network') || message.includes('fetch')) {
-    return 'No connection. Your habits are safe on this phone, and backup will retry.';
-  }
-  if (message.includes('row-level security') || message.includes('jwt')) {
-    return 'Your session expired. Sign in again to finish the backup.';
-  }
-  return 'Backup could not finish. Your habits are safe on this phone.';
-}
-
-function supabaseGateway(client: SupabaseClient): BackupGateway {
-  return {
-    async upsertHabits(rows) {
-      const { data, error } = await client
-        .from('habits')
-        .upsert(rows, { onConflict: 'user_id,local_id' })
-        .select('id, local_id');
-      if (error) return { ok: false, error: friendlyBackupError(error.message) };
-      return { ok: true, data: data ?? [] };
-    },
-    async insertCompletions(rows) {
-      const { error } = await client
-        .from('habit_completions')
-        .upsert(rows, { onConflict: 'habit_id,completed_on', ignoreDuplicates: true });
-      if (error) return { ok: false, error: friendlyBackupError(error.message) };
-      return { ok: true, data: null };
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Public API
+// Decisions
 // ---------------------------------------------------------------------------
 
 /**
  * Where does this device stand for `userId`? A device with no habits is
  * claimed on the spot (there is nothing to consent to), so that habits added
- * later belong to this account rather than being up for grabs.
+ * later — or restored from the account — belong to this account.
  */
 export async function evaluateBackup(
   userId: string,
@@ -128,113 +95,71 @@ export async function evaluateBackup(
   if (decision !== 'claimSilently') return { decision, claim };
 
   const now = new Date().toISOString();
-  const created: CloudClaim = {
-    ownerUserId: userId,
-    claimedAt: now,
-    lastUpload: { status: 'complete', at: now, habits: 0, completions: 0 },
-  };
+  const created: CloudClaim = { ownerUserId: userId, claimedAt: now, lastUpload: null };
   await writeClaim(created);
-  return { decision: 'upToDate', claim: created };
+  return { decision: 'resumeUpload', claim: created };
 }
 
-let inFlight: { userId: string; promise: Promise<BackupResult> } | null = null;
+/** May `userId` sync this device right now? Null means yes. */
+export async function checkSyncAccess(userId: string): Promise<BackupRefusal | null> {
+  if (!supabase) return 'unavailable';
+  if ((await getCurrentUserId()) !== userId) return 'sessionChanged';
+  const claim = await readClaim();
+  if (!claim) return 'needsConsent';
+  if (claim.ownerUserId !== userId) return 'otherOwner';
+  return null;
+}
+
+export type ClaimResult =
+  | { ok: true; claim: CloudClaim; fullOutbox: Outbox }
+  | { ok: false; refusal: BackupRefusal; error: string };
 
 /**
- * Copy this device's habits into `userId`'s account. `consent` must be true
- * for the first upload; afterwards the recorded claim stands in for it.
- *
- * Concurrent calls for the same account share one upload rather than racing.
- * A call for a DIFFERENT account (switch mid-upload) waits for the running
- * one to settle and then runs its own checks — it is never handed the other
- * account's result.
+ * Claim this device for `userId` (after consent) and return everything on it
+ * as an outbox for the first sync. Nothing local is modified.
  */
-export function backUpThisDevice(input: {
+export async function claimDevice(input: {
   userId: string;
   habits: readonly Habit[];
   consent: boolean;
-}): Promise<BackupResult> {
-  if (inFlight?.userId === input.userId) return inFlight.promise;
+}): Promise<ClaimResult> {
+  const refuse = (refusal: BackupRefusal): ClaimResult => ({
+    ok: false,
+    refusal,
+    error: refusalMessage(refusal),
+  });
 
-  const previous = inFlight?.promise ?? Promise.resolve(null);
-  const promise = previous
-    .catch(() => null)
-    .then(() => performBackup(input))
-    .finally(() => {
-      if (inFlight?.promise === promise) inFlight = null;
-    });
-  inFlight = { userId: input.userId, promise };
-  return promise;
-}
-
-async function performBackup({
-  userId,
-  habits,
-  consent,
-}: {
-  userId: string;
-  habits: readonly Habit[];
-  consent: boolean;
-}): Promise<BackupResult> {
-  if (!supabase) {
-    return { ok: false, error: 'Backup is not available in this version of the app.', refusal: 'unavailable' };
-  }
-
-  if ((await getCurrentUserId()) !== userId) {
-    return { ok: false, error: 'The signed-in account changed. Sign in again to back up.', refusal: 'sessionChanged' };
-  }
+  if (!supabase) return refuse('unavailable');
+  if ((await getCurrentUserId()) !== input.userId) return refuse('sessionChanged');
 
   let claim = await readClaim();
-
-  if (claim && claim.ownerUserId !== userId) {
-    return {
-      ok: false,
-      error: "This phone's habits are already backed up to a different account.",
-      refusal: 'otherOwner',
-      claim,
-    };
-  }
+  if (claim && claim.ownerUserId !== input.userId) return refuse('otherOwner');
 
   if (!claim) {
-    if (!consent && habits.length > 0) {
-      return { ok: false, error: 'Confirm the backup first.', refusal: 'needsConsent', claim };
-    }
-    // Record consent BEFORE uploading: if the app dies mid-upload, the next
+    if (!input.consent && input.habits.length > 0) return refuse('needsConsent');
+    // Record consent BEFORE syncing: if the app dies mid-sync, the next
     // launch resumes rather than asking again.
-    claim = { ownerUserId: userId, claimedAt: new Date().toISOString(), lastUpload: null };
+    claim = { ownerUserId: input.userId, claimedAt: new Date().toISOString(), lastUpload: null };
     await writeClaim(claim);
   }
 
-  const plan = buildBackupPlan(userId, habits);
-  const result = await runUpload(supabaseGateway(supabase), plan, userId);
+  return { ok: true, claim, fullOutbox: buildFullOutbox(input.habits, new Date().toISOString()) };
+}
+
+/** Remember the outcome of the last sync round, for status text after a relaunch. */
+export async function recordSyncResult(
+  userId: string,
+  result: { ok: true; habits: number; completions: number } | { ok: false },
+): Promise<CloudClaim | null> {
+  const claim = await readClaim();
+  if (!claim || claim.ownerUserId !== userId) return claim;
   const at = new Date().toISOString();
-
-  if (!result.ok) {
-    const failed: CloudClaim = {
-      ...claim,
-      lastUpload: { status: 'failed', at, habits: 0, completions: 0 },
-    };
-    await writeClaim(failed);
-    return { ok: false, error: result.error, claim: failed };
-  }
-
-  const completed: CloudClaim = {
+  const updated: CloudClaim = {
     ...claim,
-    lastUpload: {
-      status: 'complete',
-      at,
-      habits: result.data.habitsUploaded,
-      completions: result.data.completionsUploaded,
-    },
+    lastUpload: result.ok
+      ? { status: 'complete', at, habits: result.habits, completions: result.completions }
+      : { status: 'failed', at, habits: 0, completions: 0 },
   };
-  await writeClaim(completed);
-
-  return {
-    ok: true,
-    data: {
-      report: result.data,
-      claim: completed,
-      skippedHabits: plan.skippedHabits.length,
-      skippedEntries: plan.skippedCompletionEntries,
-    },
-  };
+  await writeClaim(updated);
+  return updated;
 }

@@ -13,32 +13,42 @@ import { resetProgress } from '../store/habitSlice';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '../store/store';
 import { signOutUser } from '../store/authSlice';
-import { backUpNow, refreshBackupStatus } from '../store/backupSlice';
-import type { BackupStatus } from '../store/backupSlice';
+import { syncNow, refreshSyncStatus, syncCleared, selectOutboxSize } from '../store/syncSlice';
+import type { SyncStatus } from '../store/syncSlice';
+import { CLAIM_KEY } from '../api/cloudBackupService';
+import { SYNC_STATE_KEY } from '../sync/syncStorage';
+import { formatSyncTime } from '../utils/formatSyncTime';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const ROTATIONS = [-1, 2, -2, 1, 1, -1.5, 0.5, -0.5];
 
-function isBackupActionable(status: BackupStatus): boolean {
-  return status === 'needsConsent' || status === 'upToDate' || status === 'failed';
+function isSyncActionable(status: SyncStatus): boolean {
+  return status === 'needsConsent' || status === 'synced' || status === 'failed';
 }
 
-function describeBackup(status: BackupStatus, pendingHabits: number, lastBackupAt: string | null): string {
+function describeSync(
+  status: SyncStatus,
+  pendingHabits: number,
+  lastSyncedAt: string | null,
+  queuedChanges: number,
+): string {
   switch (status) {
     case 'needsConsent':
       return `Back up ${pendingHabits} habit${pendingHabits === 1 ? '' : 's'} from this phone`;
-    case 'uploading':
-      return 'Backing up...';
-    case 'upToDate':
-      return lastBackupAt
-        ? `Backed up ${new Date(lastBackupAt).toLocaleString()}. Tap to back up again.`
-        : 'Backed up. Tap to back up again.';
+    case 'syncing':
+      return 'Syncing...';
+    case 'synced':
+      return lastSyncedAt
+        ? `Synced ${formatSyncTime(lastSyncedAt)}. Tap to sync now.`
+        : 'Synced. Tap to sync now.';
     case 'failed':
-      return "Backup didn't finish. Tap to retry.";
+      return queuedChanges > 0
+        ? `Sync paused: ${queuedChanges} change${queuedChanges === 1 ? '' : 's'} waiting. Tap to retry.`
+        : 'Sync paused. Tap to retry.';
     case 'otherOwner':
       return "This phone's habits are backed up to another account.";
     default:
-      return 'Checking backup...';
+      return 'Checking sync...';
   }
 }
 
@@ -46,7 +56,13 @@ export default function HomeScreen() {
   const { habits } = useHabitStore();
   const dispatch = useDispatch<AppDispatch>();
   const auth = useSelector((s: RootState) => s.auth);
-  const backup = useSelector((s: RootState) => s.backup);
+  const sync = useSelector((s: RootState) => s.sync);
+  const queuedChanges = useSelector(selectOutboxSize);
+  // Signed in on a device this account owns: Reset must also erase the cloud
+  // copy, otherwise the next sync would simply bring everything back.
+  const resetErasesCloud =
+    auth.status === 'signedIn' && !!auth.userId && sync.claimOwner === auth.userId;
+  const accountLabel = auth.profile ? `@${auth.profile.username}` : 'your account';
   const [accountError, setAccountError] = useState<string | null>(null);
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
@@ -156,16 +172,14 @@ export default function HomeScreen() {
     action?.();
   };
 
-  const handleBackupRowPress = () => {
+  const handleSyncRowPress = () => {
     setAccountError(null);
-    if (backup.status === 'needsConsent') {
+    if (sync.status === 'needsConsent') {
       closeProfileModalThen(() => navigation.navigate('CloudBackup'));
       return;
     }
-    // Consent already given: re-run in place; the row shows live progress.
-    if (backup.status === 'upToDate' || backup.status === 'failed') {
-      dispatch(backUpNow({ consent: false }));
-    }
+    // Consent already given: sync in place; the row shows live progress.
+    if (sync.status === 'synced' || sync.status === 'failed') dispatch(syncNow());
   };
 
   const handleOpenSignIn = () => {
@@ -187,7 +201,18 @@ export default function HomeScreen() {
   const handleResetProgress = async () => {
     try {
       // 1. Clear Storage
-      await storageService.resetAllAppData();
+      if (resetErasesCloud) {
+        // Keep the claim and outbox through the wipe: the deletions that
+        // resetProgress queues (see store/syncListener.ts) must survive to
+        // reach the server and every other device.
+        await storageService.resetAllAppData({ preserve: [CLAIM_KEY, SYNC_STATE_KEY] });
+      } else {
+        await storageService.resetAllAppData();
+        // Forget sync state BEFORE resetting so no deletions are queued: a
+        // signed-out reset clears this phone only, and the cloud copy is kept
+        // for the next sign-in to restore.
+        dispatch(syncCleared());
+      }
       
       // 2. Set new account creation date (behave like new user)
       const today = new Date().toISOString().split('T')[0];
@@ -197,9 +222,8 @@ export default function HomeScreen() {
       
       // 3. Reset Redux State
       dispatch(resetProgress());
-      // Reset also cleared the backup claim (an @atomicstep/ key); re-derive
-      // the status so the menu doesn't keep showing a stale "Backed up".
-      dispatch(refreshBackupStatus());
+      if (resetErasesCloud) dispatch(syncNow());
+      else dispatch(refreshSyncStatus());
       
       // 4. Close Modal and Navigate
       setShowProfileModal(false);
@@ -347,14 +371,14 @@ export default function HomeScreen() {
                     <>
                       <TouchableOpacity
                         style={styles.modalButton}
-                        onPress={handleBackupRowPress}
-                        disabled={!isBackupActionable(backup.status)}
+                        onPress={handleSyncRowPress}
+                        disabled={!isSyncActionable(sync.status)}
                         accessibilityRole="button"
-                        accessibilityState={{ disabled: !isBackupActionable(backup.status) }}
+                        accessibilityState={{ disabled: !isSyncActionable(sync.status) }}
                       >
                         <Cloud
                           size={24}
-                          color={backup.status === 'failed' ? COLORS.accentRedDark : COLORS.statusTodo}
+                          color={sync.status === 'failed' ? COLORS.accentRedDark : COLORS.statusTodo}
                           strokeWidth={2}
                         />
                         <View style={styles.accountTextBlock}>
@@ -362,7 +386,7 @@ export default function HomeScreen() {
                             {auth.profile ? `@${auth.profile.username}` : 'Signed in'}
                           </Text>
                           <Text style={styles.accountSubtext}>
-                            {describeBackup(backup.status, backup.pendingHabits, backup.lastBackupAt)}
+                            {describeSync(sync.status, sync.pendingHabits, sync.lastSyncedAt, queuedChanges)}
                           </Text>
                         </View>
                       </TouchableOpacity>
@@ -378,16 +402,20 @@ export default function HomeScreen() {
                   <TouchableOpacity
                     style={[styles.modalButton, styles.dangerButton]}
                     onPress={() => Alert.alert(
-                      'Reset Progress',
-                      'Are you sure you want to reset all your habit data? This will permanently delete your habits, streaks, and achievements.',
+                      resetErasesCloud ? 'Erase everywhere?' : 'Reset Progress',
+                      resetErasesCloud
+                        ? `This permanently deletes your habits, streaks and achievements from this phone AND from ${accountLabel}, on every device signed in to it. This cannot be undone.`
+                        : sync.claimOwner
+                          ? 'This deletes your habits, streaks and achievements from this phone. Your cloud backup is kept: sign in again to restore it.'
+                          : 'Are you sure you want to reset all your habit data? This will permanently delete your habits, streaks, and achievements.',
                       [
                         { text: 'Cancel', style: 'cancel' },
-                        { 
-                          text: 'Reset Everything', 
-                          style: 'destructive', 
-                          onPress: handleResetProgress 
-                        }
-                      ]
+                        {
+                          text: resetErasesCloud ? 'Erase everywhere' : 'Reset Everything',
+                          style: 'destructive',
+                          onPress: handleResetProgress,
+                        },
+                      ],
                     )}
                   >
                     <RotateCcw size={24} color={COLORS.accentRed} strokeWidth={2} />

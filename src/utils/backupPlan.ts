@@ -12,6 +12,7 @@
  */
 
 import type { Habit } from '../types';
+import { isCalendarDate } from './streaks';
 
 /** Mirrors public.habits (see supabase/migrations/0001_schema.sql). */
 export interface HabitRow {
@@ -50,15 +51,7 @@ export interface BackupPlan {
 }
 
 const DAYS_PER_WEEK = 7;
-const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
 const DATE_PREFIX = /^(\d{4}-\d{2}-\d{2})/;
-
-/** True only for a real calendar day: rejects '2026-02-30' as Postgres does. */
-function isCalendarDate(value: string): boolean {
-  if (!DATE_KEY.test(value)) return false;
-  const parsed = new Date(`${value}T00:00:00Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
-}
 
 /**
  * Current builds store YYYY-MM-DD. Older builds may have stored a full ISO
@@ -87,10 +80,38 @@ function targetDays(habit: Habit, frequency: boolean[]): number {
   return frequency.filter(Boolean).length;
 }
 
-function toCompletedAt(value: boolean | string): string | null {
+/** A completion log value as an ISO timestamp; null for legacy `true`. */
+export function toCompletedAt(value: boolean | string): string | null {
   if (typeof value !== 'string') return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+/** The habit fields that sync, as the server stores them. */
+export type SyncedHabitFields = Omit<HabitRow, 'user_id'>;
+
+/**
+ * Validate one habit for the server. Shared by the first backup and by
+ * ongoing sync, so both reject exactly the same inputs.
+ */
+export function validateSyncedHabit(
+  habit: Habit,
+): { ok: true; fields: SyncedHabitFields } | { ok: false; reason: SkippedHabit['reason'] } {
+  if (!isValidFrequency(habit.frequency)) return { ok: false, reason: 'invalid frequency' };
+  const createdAt = normaliseCreatedAt(habit.createdAt);
+  if (!createdAt) return { ok: false, reason: 'invalid createdAt' };
+  return {
+    ok: true,
+    fields: {
+      local_id: habit.id,
+      title: habit.title,
+      description: habit.description ?? null,
+      category: habit.category,
+      frequency: [...habit.frequency],
+      target_days_per_week: targetDays(habit, habit.frequency),
+      created_at: createdAt,
+    },
+  };
 }
 
 function buildCompletions(
@@ -126,27 +147,13 @@ export function buildBackupPlan(userId: string, habits: readonly Habit[]): Backu
       skippedHabits.push({ localId: habit.id, reason: 'duplicate local id' });
       continue;
     }
-    if (!isValidFrequency(habit.frequency)) {
-      skippedHabits.push({ localId: habit.id, reason: 'invalid frequency' });
-      continue;
-    }
-    const createdAt = normaliseCreatedAt(habit.createdAt);
-    if (!createdAt) {
-      skippedHabits.push({ localId: habit.id, reason: 'invalid createdAt' });
+    const validated = validateSyncedHabit(habit);
+    if (!validated.ok) {
+      skippedHabits.push({ localId: habit.id, reason: validated.reason });
       continue;
     }
     seen.add(habit.id);
-
-    habitRows.push({
-      user_id: userId,
-      local_id: habit.id,
-      title: habit.title,
-      description: habit.description ?? null,
-      category: habit.category,
-      frequency: [...habit.frequency],
-      target_days_per_week: targetDays(habit, habit.frequency),
-      created_at: createdAt,
-    });
+    habitRows.push({ user_id: userId, ...validated.fields });
 
     const { drafts, skipped } = buildCompletions(habit.completionLog);
     completionsByLocalId[habit.id] = drafts;
