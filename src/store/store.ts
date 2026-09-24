@@ -2,6 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import habitReducer from './habitSlice';
 import authReducer from './authSlice';
 import syncReducer from './syncSlice';
+import socialReducer from './socialSlice';
 import { syncListener } from './syncListener';
 import { storageService } from '../api/storageService';
 
@@ -10,6 +11,7 @@ export const store = configureStore({
     habits: habitReducer,
     auth: authReducer,
     sync: syncReducer,
+    social: socialReducer,
   },
   middleware: (getDefaultMiddleware) => getDefaultMiddleware().prepend(syncListener.middleware),
 });
@@ -36,7 +38,7 @@ store.subscribe(() => {
         badges: habits.badges,
         // Until the stored outbox has been read, never overwrite it with the
         // empty pre-load one.
-        syncState: sync.loaded ? { outbox: sync.outbox, cursor: sync.cursor } : null,
+        syncState: sync.loaded ? { outbox: sync.outbox, cursor: sync.cursor, milestones: sync.milestones } : null,
       })
       .catch((error: unknown) => {
         if (__DEV__) console.warn('[store] persist failed', error);

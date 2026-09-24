@@ -105,12 +105,15 @@ check('alice cannot insert a completion against bob\'s habit', !griefed,
 
 // ------------------------------------------------------- RLS: friends
 console.log('\n== Friends ==');
-await as(A, () => db.query("insert into public.friendships (requester_id, addressee_id) values ($1, $2)", [A, B]));
-await expectError('reciprocal duplicate request is rejected', () => as(B, () => db.query("insert into public.friendships (requester_id, addressee_id) values ($1, $2)", [B, A])), /duplicate key|unique/i);
-check('requester cannot accept their own request',
-  (await as(A, () => db.query("update public.friendships set status = 'accepted' where requester_id = $1", [A]))).affectedRows === 0, 'accepted by requester');
+// As of 0007 friendships are only created through send_friend_request and
+// accepted through respond_to_friend_request; direct writes are refused.
+const abRequest = (await as(A, () => rows('select public.send_friend_request($1) as id', [B])))[0].id;
+await expectError('the unique pair index still blocks a reciprocal duplicate row (as table owner, below RLS)',
+  () => db.query('insert into public.friendships (requester_id, addressee_id) values ($1, $2)', [B, A]), /duplicate key|unique/i);
+await expectError('the requester cannot accept their own request',
+  () => as(A, () => db.query('select public.respond_to_friend_request($1, true)', [abRequest])), /not found/i);
 check('pending: bob cannot see alice\'s profile yet', (await as(B, () => rows('select * from public.profiles where id = $1', [A]))).length === 0, 'visible while pending');
-await as(B, () => db.query("update public.friendships set status = 'accepted', responded_at = now() where addressee_id = $1", [B]));
+await as(B, () => db.query('select public.respond_to_friend_request($1, true)', [abRequest]));
 check('accepted: bob can see alice\'s profile', (await as(B, () => rows('select * from public.profiles where id = $1', [A]))).length === 1, 'not visible');
 check('accepted: bob STILL cannot see alice\'s habits', (await as(B, () => rows('select * from public.habits where user_id = $1', [A]))).length === 0, 'habit titles leaked to a friend');
 check('carol (stranger) cannot see alice\'s profile', (await as(C, () => rows('select * from public.profiles where id = $1', [A]))).length === 0, 'leak');
@@ -212,4 +215,105 @@ await expectError('anon cannot call sync_pull',
 const daveBoard = await as(D, () => rows("select bricks from public.friends_leaderboard('2026-01-01')"));
 check('leaderboard counts only done completions of habits that still exist',
   daveBoard.length === 1 && Number(daveBoard[0].bricks) === 1, JSON.stringify(daveBoard));
+// ------------------------------------------------------------ social (0007)
+console.log('\n== Social: friendship consent ==');
+const M = '0000000a-0000-4000-8000-00000000000a'; // mallory
+const V = '0000000b-0000-4000-8000-00000000000b'; // victim
+const X = '0000000c-0000-4000-8000-00000000000c'; // bystander
+for (const [id, name] of [[M, 'mallory'], [V, 'victim'], [X, 'bystander']]) {
+  await db.query('insert into auth.users (id, email, raw_user_meta_data) values ($1, $2, $3)',
+    [id, name + '@example.com', JSON.stringify({ username: name })]);
+}
+const sees = async (viewer, target) =>
+  (await as(viewer, () => rows('select 1 from public.profiles where id = $1', [target]))).length === 1;
+const friendshipsBetween = (a, b) => db.query(
+  'select * from public.friendships where (requester_id = $1 and addressee_id = $2) or (requester_id = $2 and addressee_id = $1)', [a, b]);
+
+await expectError('a client cannot insert a pre-accepted friendship',
+  () => as(M, () => db.query("insert into public.friendships (requester_id, addressee_id, status) values ($1, $2, 'accepted')", [M, V])),
+  /row-level security|permission denied/i);
+check('...so mallory still cannot see the victim', !(await sees(M, V)), 'visible');
+
+await as(X, () => db.query('select public.send_friend_request($1)', [M]));
+const hijack = await as(M, () => db.query(
+  "update public.friendships set requester_id = $1, status = 'accepted' where addressee_id = $2", [V, M]))
+  .then((r) => r.affectedRows, () => 0);
+check('an addressee cannot rewrite a request into a friendship with someone else', hijack === 0 && !(await sees(M, V)),
+  `updated ${hijack} row(s)`);
+
+console.log('\n== Social: requests ==');
+await db.query('delete from public.friendships where requester_id = any($1) or addressee_id = any($1)', [[M, V, X]]);
+const req = (await as(M, () => rows('select public.send_friend_request($1) as id', [V])))[0].id;
+check('send_friend_request creates a pending request', (await friendshipsBetween(M, V)).rows[0]?.status === 'pending', 'no row');
+check('a pending request reveals nothing yet', !(await sees(M, V)) && !(await sees(V, M)), 'visible while pending');
+await expectError('only the addressee can respond',
+  () => as(M, () => db.query('select public.respond_to_friend_request($1, true)', [req])), /not found/i);
+await as(V, () => db.query('select public.respond_to_friend_request($1, true)', [req]));
+check('accepting makes both profiles visible', (await sees(M, V)) && (await sees(V, M)), 'not visible');
+await expectError('you cannot befriend yourself',
+  () => as(M, () => db.query('select public.send_friend_request($1)', [M])), /yourself/i);
+const resent = (await as(M, () => rows('select public.send_friend_request($1) as id', [V])))[0].id;
+check('re-sending to an existing friend is a harmless no-op', resent === req && (await friendshipsBetween(M, V)).rows.length === 1, resent);
+
+await db.query('delete from public.friendships where requester_id = any($1) or addressee_id = any($1)', [[M, V, X]]);
+await as(X, () => db.query('select public.send_friend_request($1)', [V]));
+await as(V, () => db.query('select public.send_friend_request($1)', [X]));
+check('two people asking each other become friends', (await friendshipsBetween(X, V)).rows[0]?.status === 'accepted', 'not accepted');
+
+const dec = (await as(M, () => rows('select public.send_friend_request($1) as id', [X])))[0].id;
+await as(X, () => db.query('select public.respond_to_friend_request($1, false)', [dec]));
+check('declining removes the request', (await friendshipsBetween(M, X)).rows.length === 0, 'still there');
+
+const mine = await as(V, () => rows('select * from public.my_friendships()'));
+check('my_friendships lists friends with their identity',
+  mine.length === 1 && mine[0].username === 'bystander' && mine[0].status === 'accepted', JSON.stringify(mine));
+const pendingReq = (await as(M, () => rows('select public.send_friend_request($1) as id', [V])))[0].id;
+const incoming = (await as(V, () => rows('select * from public.my_friendships()'))).find((f) => f.friendship_id === pendingReq);
+check('...and an incoming request shows who sent it', incoming?.direction === 'incoming' && incoming?.username === 'mallory',
+  JSON.stringify(incoming));
+
+console.log('\n== Social: blocking ==');
+await as(V, () => db.query('select public.block_user($1)', [M]));
+check('blocking removes any friendship or request', (await friendshipsBetween(M, V)).rows.length === 0, 'row survived');
+await expectError('a blocked user cannot send a new request (generic error, block not revealed)',
+  () => as(M, () => db.query('select public.send_friend_request($1)', [V])), /could not send/i);
+check('a blocked user cannot find the blocker by search',
+  (await as(M, () => rows("select username from public.search_profiles('vic')"))).length === 0, 'found');
+check('search treats % and _ literally, so the user base cannot be enumerated',
+  (await as(X, () => rows("select * from public.search_profiles('%%%')"))).length === 0 &&
+  (await as(X, () => rows("select * from public.search_profiles('___')"))).length === 0, 'wildcards matched users');
+check('the blocker cannot find them either',
+  (await as(V, () => rows("select username from public.search_profiles('mal')"))).length === 0, 'found');
+check('my_blocks lists who I blocked', (await as(V, () => rows('select username from public.my_blocks()'))).map((b) => b.username).join() === 'mallory', 'missing');
+check("the blocked user cannot read the blocker's block list",
+  (await as(M, () => rows('select * from public.blocks'))).length === 0, 'visible');
+await as(V, () => db.query('delete from public.blocks where blocked_id = $1', [M]));
+const afterUnblock = await as(M, () => rows('select public.send_friend_request($1) as id', [V]));
+check('after unblocking, requests work again', !!afterUnblock[0]?.id, 'still refused');
+
+console.log('\n== Social: milestones, feed, claps ==');
+const postEvent = (uid, key, payload = { streak: 7 }) => as(uid, () => db.query(
+  "insert into public.activity_events (user_id, type, payload, dedupe_key) values ($1, 'streak_milestone', $2, $3) on conflict (user_id, dedupe_key) do nothing",
+  [uid, JSON.stringify(payload), key]));
+await postEvent(X, 'streak:h1:7:2026-09-24');
+await postEvent(X, 'streak:h1:7:2026-09-24');
+check('a milestone is posted once, however many times it is sent',
+  (await rows("select count(*)::int n from public.activity_events where user_id = $1", [X]))[0].n === 1, 'duplicated');
+await expectError('an oversized payload is rejected',
+  () => postEvent(X, 'big', { junk: 'x'.repeat(2000) }), /check constraint|violates/i);
+await expectError('a non-object payload is rejected',
+  () => as(X, () => db.query("insert into public.activity_events (user_id, type, payload, dedupe_key) values ($1, 'streak_milestone', '\"text\"', 'k2')", [X])),
+  /check constraint|violates/i);
+await postEvent(M, 'streak:m1:7:2026-09-24');
+const vFeed = await as(V, () => rows('select username from public.friend_feed(50, null)'));
+check("the feed shows friends' milestones and not strangers'",
+  vFeed.some((e) => e.username === 'bystander') && !vFeed.some((e) => e.username === 'mallory'), JSON.stringify(vFeed));
+const xEvent = (await rows('select id from public.activity_events where user_id = $1', [X]))[0].id;
+await as(V, () => db.query('insert into public.claps (event_id, user_id) values ($1, $2)', [xEvent, V]));
+const clapped = await as(V, () => rows('select clap_count, i_clapped from public.friend_feed(50, null) where id = $1', [xEvent]));
+check('a friend can clap, and the feed counts it', Number(clapped[0]?.clap_count) === 1 && clapped[0]?.i_clapped === true, JSON.stringify(clapped));
+const mEvent = (await rows('select id from public.activity_events where user_id = $1', [M]))[0].id;
+await expectError("a stranger cannot clap on someone's milestone",
+  () => as(V, () => db.query('insert into public.claps (event_id, user_id) values ($1, $2)', [mEvent, V])),
+  /row-level security/i);
 finish();

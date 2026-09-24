@@ -5,6 +5,8 @@ export type RootStackParamList = {
   SignUp: { prefillEmail?: string } | undefined;
   /** Consent + progress for the first upload of this device's habits. */
   CloudBackup: undefined;
+  /** Friends' milestones, the weekly leaderboard, and friends. */
+  Social: undefined;
   Welcome: { isNewUser: boolean };
   Tabs: { screen?: string; params?: Record<string, any> } | undefined;
   HabitDetail: { habitId: string };

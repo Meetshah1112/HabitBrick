@@ -1,5 +1,6 @@
 /**
- * Records local habit changes into the sync outbox.
+ * Records local habit changes into the sync outbox, and detects the
+ * milestones (streaks, bricks, tiers, badges) to post to friends' feeds.
  *
  * Watches EVERY action that changes the habit list and diffs before/after
  * (sync/outbox.ts recordLocalChanges), rather than listing specific actions:
@@ -15,12 +16,14 @@
 
 import { createListenerMiddleware } from '@reduxjs/toolkit';
 import { recordLocalChanges, type Outbox } from '../sync/outbox';
+import { detectMilestones } from '../social/milestones';
+import { getLocalDateStr } from '../utils/streaks';
 import { applyRemoteChanges, loadData, rehydrateDay } from './habitSlice';
-import { outboxRecorded } from './syncSlice';
-import type { Habit } from '../types';
+import { milestonesRecorded, outboxRecorded } from './syncSlice';
+import type { Badge, Habit } from '../types';
 
 interface ListenerState {
-  habits: { habits: Habit[] };
+  habits: { habits: Habit[]; badges: Badge[] };
   sync: { loaded: boolean; claimOwner: string | null; outbox: Outbox };
 }
 
@@ -48,5 +51,15 @@ syncListener.startListening({
       new Date().toISOString(),
     );
     if (next !== state.sync.outbox) api.dispatch(outboxRecorded(next));
+
+    // Same skip rules apply: the boot load would back-fill every historical
+    // milestone into friends' feeds, and a merge's milestones were already
+    // posted by the device that earned them.
+    const milestones = detectMilestones(
+      { habits: previous.habits.habits, badges: previous.habits.badges },
+      { habits: state.habits.habits, badges: state.habits.badges },
+      getLocalDateStr(),
+    );
+    if (milestones.length > 0) api.dispatch(milestonesRecorded(milestones));
   },
 });

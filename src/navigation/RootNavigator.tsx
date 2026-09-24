@@ -19,6 +19,8 @@ import { onAuthStateChange } from '../api/authService';
 import { startAuthAutoRefresh } from '../lib/supabase';
 import { initAuth, authUserChanged, fetchProfile } from '../store/authSlice';
 import CloudBackupScreen from '../screens/CloudBackupScreen';
+import SocialScreen from '../screens/SocialScreen';
+import { loadFriends } from '../store/socialSlice';
 import { useSyncTriggers } from '../sync/useSyncTriggers';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -90,11 +92,24 @@ export default function RootNavigator() {
   }, [dispatch]);
 
   useEffect(() => {
-    if (authStatus === 'signedIn') dispatch(fetchProfile());
+    if (authStatus !== 'signedIn') return;
+    dispatch(fetchProfile());
+    // So the Home header can show a dot for pending friend requests.
+    dispatch(loadFriends());
   }, [authStatus, dispatch]);
 
   // Two-way sync: on sign-in, after local changes, and on foreground.
   useSyncTriggers();
+
+  // A friend request that arrives while the app is open should light the
+  // Home dot the next time the user comes back to it, not only at sign-in.
+  useEffect(() => {
+    if (authStatus !== 'signedIn') return;
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') dispatch(loadFriends());
+    });
+    return () => sub.remove();
+  }, [authStatus, dispatch]);
 
   // Track the last-known calendar date so we can detect midnight rollovers
   const lastDateRef = useRef<string>(getLocalDateStr());
@@ -178,6 +193,11 @@ export default function RootNavigator() {
         name="SignUp"
         component={SignUpScreen}
         options={{ animation: 'slide_from_bottom', presentation: 'modal' }}
+      />
+      <Stack.Screen
+        name="Social"
+        component={SocialScreen}
+        options={{ animation: 'slide_from_right' }}
       />
       <Stack.Screen
         name="CloudBackup"

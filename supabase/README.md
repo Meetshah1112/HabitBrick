@@ -12,6 +12,7 @@ Apply in order:
 | `0004_username_available.sql` | Exact-match username check for the sign-up form |
 | `0005_completion_owner_integrity.sql` | Composite FK: a completion's owner must match its habit's owner |
 | `0006_two_way_sync.sql` | Last-writer-wins `sync_push` / `sync_pull`, completion tombstones, leaderboard fix |
+| `0007_social_consent_and_blocking.sql` | Consent-checked friend requests, blocks, literal search, bounded milestone payloads |
 
 Paste each into the Supabase dashboard SQL editor, or run them with the
 Supabase CLI once a project is linked.
@@ -29,38 +30,77 @@ Aggregate brick counts reach the leaderboard solely through
 `friends_leaderboard()`, a `SECURITY DEFINER` function that emits counts and
 profile identity — never a title, category, or per-day row.
 
-Four functions deliberately bypass RLS. Each is `SECURITY DEFINER` with a
-pinned `search_path`, revoked from `public`, and (except `username_available`) granted only
-to `authenticated`:
+These functions deliberately bypass RLS. Each is `SECURITY DEFINER` with a
+pinned `search_path`, revoked from `public` and `anon`, and granted only to
+`authenticated` unless noted:
 
 - `is_friend(other)` — takes one argument and always compares against
   `auth.uid()`. A two-argument form would let any signed-in user probe whether
   two strangers are friends, and it cannot be revoked because policies need
   `EXECUTE`.
-- `search_profiles(q)` — friend discovery. Prefix match only, minimum 3
-  characters so `''` cannot dump the table, hard limit of 10, identity columns
-  only.
+- `search_profiles(q)` — friend discovery. Literal prefix match (LIKE
+  wildcards are escaped, so `'%%%'` cannot match everyone), minimum 3
+  characters, hard limit of 10, identity columns only, and never across a
+  block in either direction.
 - `friends_leaderboard(since_date)` — counts only, as described above.
-- `username_available(name)` — the one function granted to `anon`, because
-  someone on the sign-up form is not authenticated yet. Exact
-  case-insensitive match on a single name, returns a boolean only, and
-  invalid formats return `false`. Revealing that one specific name exists is
-  inherent to any sign-up form.
+- `username_available(name)` — granted to `anon`, because someone on the
+  sign-up form is not authenticated yet. Exact case-insensitive match on a
+  single name, returns a boolean only.
+- `send_friend_request(target)`, `respond_to_friend_request(id, accept)` —
+  the ONLY way to create or accept a friendship (see below).
+- `block_user(target)` — ends any friendship and records the block in one
+  transaction.
+- `my_friendships()`, `my_blocks()` — list the caller's own rows with the
+  other person's identity, which `profiles_select` would otherwise hide for a
+  pending request.
+- `blocked_between(a, b)` — internal only: revoked from every client role,
+  because a two-argument block check is an oracle.
 
-`friend_feed()` is deliberately `SECURITY INVOKER` so RLS on `activity_events`
-stays the single enforcement point rather than being duplicated in function
-logic.
+`friend_feed()` and `sync_push()` / `sync_pull()` are deliberately
+`SECURITY INVOKER`, so RLS stays the single enforcement point.
 
-### Known gap: blocking is not yet enforced
+### Friendship consent (0007)
 
-`friendship_status` includes `'blocked'`, but a blocked user can currently
-delete the friendship row (the delete policy allows either party) and send a
-fresh request, which clears the block.
+Clients cannot write friendship rows at all; there is no insert or update
+policy. Before 0007 there were, and both could be abused: the insert policy
+did not check the status, so a client could insert a friendship that was
+already `'accepted'`; the update policy did not pin the ids, so the addressee
+of any request could rewrite `requester_id` to a third person and accept.
+Either way, someone became your friend without asking and could see your
+profile, milestones and leaderboard counts.
 
-Blocking should not live on the friendship row for exactly this reason. It
-needs its own `blocks` table that survives the friendship being deleted, plus
-a policy denying `friendships` insert when a block exists in either direction.
-Tracked for the social phase — do not ship user-facing "Block" UI until then.
+Now `send_friend_request` creates a pending request (or accepts one the other
+person already sent: asking back is consent from both sides), and only the
+addressee can answer it through `respond_to_friend_request`. Deleting
+(cancel, decline, unfriend) stays a plain policy, because removing a
+friendship can never create one.
+
+### Blocking
+
+Blocks live in their own `blocks` table rather than on the friendship row,
+which either party could delete, silently dropping the block. A block
+removes the friendship, stops new requests (with the same generic error as a
+nonexistent user, so a block is never revealed), and hides each person from
+the other's search. Only the blocker can see or remove it. The old
+`'blocked'` enum value is unused.
+
+### What friends can see
+
+A friend sees your profile, your milestones (streaks, brick counts, tiers,
+and non-category badges) and your weekly brick count. Never your habits, and
+never category badges such as "Healthy Living" or "Money Maker", which would
+reveal what kind of habit you track. Milestone payloads are capped at 512
+bytes and rendered by the reader's app from its own tables, never from
+strings in the payload.
+
+### Known limits
+
+- Username search is still an enumeration surface: an attacker can walk
+  prefixes three letters at a time. Rate limiting belongs at the API gateway.
+- Nothing rate-limits friend requests yet.
+- Usernames and display names are user-chosen text shown to other people,
+  with no filtering and no "report" flow. App Store guideline 1.2 and Google
+  Play's user-generated-content policy expect both before release.
 
 ## Two-way sync
 

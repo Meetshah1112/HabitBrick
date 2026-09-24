@@ -1,4 +1,4 @@
-import { calculateStreak, calculateLongestStreak, isCalendarDate } from '../streaks';
+import { calculateStreak, calculateLongestStreak, isCalendarDate, getWeekStartStr } from '../streaks';
 
 // Thursday 24 September 2026, local time. Mon 21, Tue 22, Wed 23; Fri 18,
 // Sat 19, Sun 20.
@@ -76,5 +76,20 @@ describe('calculateLongestStreak', () => {
   test('accepts ISO timestamp values as completions', () => {
     const log = { '2026-09-22': '2026-09-22T07:00:00.000Z', '2026-09-23': true };
     expect(calculateLongestStreak(log, EVERY_DAY, NOW)).toBe(2);
+  });
+});
+
+describe('getWeekStartStr', () => {
+  test('returns the Monday of the current week', () => {
+    expect(getWeekStartStr(NOW)).toBe('2026-09-21'); // Thursday -> Monday
+  });
+
+  test('treats Monday as its own week start and Sunday as the end of the week', () => {
+    expect(getWeekStartStr(new Date(2026, 8, 21, 9))).toBe('2026-09-21');
+    expect(getWeekStartStr(new Date(2026, 8, 27, 23))).toBe('2026-09-21');
+  });
+
+  test('crosses a month boundary correctly', () => {
+    expect(getWeekStartStr(new Date(2026, 9, 1, 12))).toBe('2026-09-28'); // Thu 1 Oct
   });
 });

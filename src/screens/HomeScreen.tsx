@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Pressable, Alert, TextInput, Platform } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { User, X, Pencil, RotateCcw, Flame, Database, LogIn, LogOut, Cloud } from 'lucide-react-native';
+import { User, Users, X, Pencil, RotateCcw, Flame, Database, LogIn, LogOut, Cloud } from 'lucide-react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { COLORS, FONT_SIZES, SPACING, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import StickyNote from '../components/StickyNote';
@@ -12,7 +12,9 @@ import { storageService } from '../api/storageService';
 import { resetProgress } from '../store/habitSlice';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '../store/store';
-import { signOutUser } from '../store/authSlice';
+import { signOutUser, fetchProfile } from '../store/authSlice';
+import { selectIncomingRequestCount } from '../store/socialSlice';
+import { updateMyProfile } from '../api/authService';
 import { syncNow, refreshSyncStatus, syncCleared, selectOutboxSize } from '../store/syncSlice';
 import type { SyncStatus } from '../store/syncSlice';
 import { CLAIM_KEY } from '../api/cloudBackupService';
@@ -58,6 +60,7 @@ export default function HomeScreen() {
   const auth = useSelector((s: RootState) => s.auth);
   const sync = useSelector((s: RootState) => s.sync);
   const queuedChanges = useSelector(selectOutboxSize);
+  const incomingRequests = useSelector(selectIncomingRequestCount);
   // Signed in on a device this account owns: Reset must also erase the cloud
   // copy, otherwise the next sync would simply bring everything back.
   const resetErasesCloud =
@@ -78,9 +81,16 @@ export default function HomeScreen() {
   };
 
   const handleSaveProfile = async () => {
-    if (editNameInput.trim()) {
-      await AsyncStorage.setItem('@atomicstep/username', editNameInput.trim());
-      setUserName(editNameInput.trim());
+    const name = editNameInput.trim();
+    if (name) {
+      await AsyncStorage.setItem('@atomicstep/username', name);
+      setUserName(name);
+      // Signed in: this is also the name friends see.
+      if (auth.status === 'signedIn') {
+        const result = await updateMyProfile({ displayName: name });
+        if (result.ok) dispatch(fetchProfile());
+        else setAccountError(result.error);
+      }
     }
     setIsEditingProfile(false);
   };
@@ -277,9 +287,24 @@ export default function HomeScreen() {
             <Text style={styles.greetingText}>{getTimeGreeting()}</Text>
             <Text style={styles.headerTitle}>{userName}</Text>
           </View>
-          <TouchableOpacity style={styles.avatar} onPress={() => setShowProfileModal(true)}>
-            <User size={24} color={COLORS.textTertiary} strokeWidth={2} />
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            {auth.isCloudEnabled && (
+              <TouchableOpacity
+                style={styles.avatar}
+                onPress={() => navigation.navigate('Social')}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  incomingRequests > 0 ? `Friends, ${incomingRequests} new request${incomingRequests === 1 ? '' : 's'}` : 'Friends'
+                }
+              >
+                <Users size={22} color={COLORS.textTertiary} strokeWidth={2} />
+                {incomingRequests > 0 && <View style={styles.requestDot} />}
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={styles.avatar} onPress={() => setShowProfileModal(true)}>
+              <User size={24} color={COLORS.textTertiary} strokeWidth={2} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Top Streak Board */}
@@ -456,6 +481,21 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#212121', // almost black
     letterSpacing: -0.5,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+  },
+  requestDot: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    width: 11,
+    height: 11,
+    borderRadius: 6,
+    backgroundColor: COLORS.accentRed,
+    borderWidth: 2,
+    borderColor: '#E5DFD4',
   },
   avatar: {
     width: 44,

@@ -117,3 +117,10 @@ export function calculateLongestStreak(
   }
   return best;
 }
+
+/** Monday of the week containing `now`, as YYYY-MM-DD: the weekly leaderboard's start. */
+export function getWeekStartStr(now: Date = new Date()): string {
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12);
+  monday.setDate(monday.getDate() - scheduleIndex(monday));
+  return getLocalDateStr(monday);
+}

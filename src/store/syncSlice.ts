@@ -30,6 +30,8 @@ import { mergeRemote } from '../sync/mergeRemote';
 import { performSync, type SyncPort, type SyncReport } from '../sync/syncEngine';
 import { supabaseSyncGateway } from '../sync/supabaseSyncGateway';
 import { loadSyncStateFromStorage } from '../sync/syncStorage';
+import { postMilestones } from '../api/socialService';
+import type { MilestoneEvent } from '../social/milestones';
 import { applyRemoteChanges, editHabit } from './habitSlice';
 import { authUserChanged, signOutUser } from './authSlice';
 import type { Habit } from '../types';
@@ -42,6 +44,8 @@ interface SyncState {
   claimOwner: string | null;
   outbox: Outbox;
   cursor: string | null;
+  /** Milestones waiting to be posted to friends' feeds; posted after each sync round. */
+  milestones: MilestoneEvent[];
   /** Whose UI status this is (token refreshes re-fire authUserChanged). */
   forUserId: string | null;
   status: SyncStatus;
@@ -62,6 +66,7 @@ const initialState: SyncState = {
   claimOwner: null,
   outbox: EMPTY_OUTBOX,
   cursor: null,
+  milestones: [],
   forUserId: null,
   status: 'idle',
   inFlight: false,
@@ -70,6 +75,9 @@ const initialState: SyncState = {
   lastSyncedAt: null,
   error: null,
 };
+
+/** Bound on queued milestones: a long offline stretch must not grow storage forever. */
+const MAX_QUEUED_MILESTONES = 50;
 
 /** Immer's current() throws on a non-draft; the outbox may be either. */
 function plain<T>(value: T): T {
@@ -96,6 +104,7 @@ export const loadSyncState = createAsyncThunk('sync/load', async () => {
     lastSyncedAt: claim?.lastUpload?.status === 'complete' ? claim.lastUpload.at : null,
     outbox: persisted.outbox,
     cursor: persisted.cursor,
+    milestones: persisted.milestones,
   };
 });
 
@@ -192,6 +201,14 @@ export const syncNow = createAsyncThunk<
       habits: result.data.pushedHabits,
       completions: result.data.pushedCompletions,
     });
+
+    // Milestones ride on the sync round. A failed post keeps them queued for
+    // the next round; it never fails the sync itself.
+    const queued = getState().sync.milestones;
+    if (queued.length > 0) {
+      const posted = await postMilestones(userId, queued);
+      if (posted.ok) dispatch(syncSlice.actions.milestonesPosted(queued.map((m) => m.dedupeKey)));
+    }
     return { report: result.data, lastSyncedAt: claim?.lastUpload?.at ?? new Date().toISOString() };
   },
   // One round at a time; a trigger that fires mid-round is simply skipped.
@@ -256,11 +273,22 @@ const syncSlice = createSlice({
     claimRecorded(state, action: PayloadAction<string>) {
       state.claimOwner = action.payload;
     },
+    milestonesRecorded(state, action: PayloadAction<MilestoneEvent[]>) {
+      const known = new Set(state.milestones.map((m) => m.dedupeKey));
+      const fresh = action.payload.filter((m) => !known.has(m.dedupeKey));
+      // Keep the newest if the cap is hit: they are the ones friends will care about.
+      state.milestones = [...state.milestones, ...fresh].slice(-MAX_QUEUED_MILESTONES);
+    },
+    milestonesPosted(state, action: PayloadAction<string[]>) {
+      const posted = new Set(action.payload);
+      state.milestones = state.milestones.filter((m) => !posted.has(m.dedupeKey));
+    },
     /** Forget this device's sync state entirely (reset while signed out). */
     syncCleared(state) {
       state.claimOwner = null;
       state.outbox = EMPTY_OUTBOX;
       state.cursor = null;
+      state.milestones = [];
       state.lastSyncedAt = null;
       resetUi(state);
     },
@@ -274,6 +302,7 @@ const syncSlice = createSlice({
         // Keep anything recorded before the load finished (should be nothing).
         state.outbox = mergeOutboxes(action.payload.outbox, plain(state.outbox));
         state.cursor = action.payload.cursor;
+        state.milestones = [...action.payload.milestones, ...plain(state.milestones)].slice(-MAX_QUEUED_MILESTONES);
       })
       .addCase(loadSyncState.rejected, (state) => {
         // Unreadable storage: start clean rather than never recording changes.
@@ -329,7 +358,7 @@ const syncSlice = createSlice({
   },
 });
 
-export const { outboxRecorded, syncCleared } = syncSlice.actions;
+export const { outboxRecorded, syncCleared, milestonesRecorded } = syncSlice.actions;
 
 export const selectOutboxSize = (state: { sync: SyncState }): number => outboxSize(state.sync.outbox);
 
