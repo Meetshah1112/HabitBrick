@@ -6,12 +6,18 @@ import HabitDetailScreen from '../screens/HabitDetailScreen';
 import StreakCelebrationScreen from '../screens/StreakCelebrationScreen';
 import LegalScreen from '../screens/LegalScreen';
 import WelcomeScreen from '../screens/WelcomeScreen';
+import SignInScreen from '../screens/SignInScreen';
+import SignUpScreen from '../screens/SignUpScreen';
 import { RootStackParamList } from './types';
 import { requestNotificationPermissions, rescheduleAllHabitNotifications } from '../api/notificationService';
 import { useSelector, useDispatch } from 'react-redux';
 import type { RootState, AppDispatch } from '../store/store';
 import { rehydrateDay, getLocalDateStr, editHabit } from '../store/habitSlice';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { purgeLegacyCredentials } from '../api/legacyCredentialPurge';
+import { onAuthStateChange } from '../api/authService';
+import { startAuthAutoRefresh } from '../lib/supabase';
+import { initAuth, authUserChanged, fetchProfile } from '../store/authSlice';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -19,6 +25,7 @@ export default function RootNavigator() {
   const dispatch = useDispatch<AppDispatch>();
   const habits = useSelector((s: RootState) => s.habits.habits);
   const isLoaded = useSelector((s: RootState) => s.habits.isLoaded);
+  const authStatus = useSelector((s: RootState) => s.auth.status);
 
   // We always boot into Welcome. isNewUser controls whether the splash
   // routes the user to AddHabit (first launch) or straight to Tabs (returning).
@@ -29,6 +36,12 @@ export default function RootNavigator() {
 
   useEffect(() => {
     const initFirstLaunch = async () => {
+      // Security: remove plaintext passwords left by the old local "auth".
+      // Must not block boot; it is idempotent and simply retries next launch.
+      await purgeLegacyCredentials().catch((e) => {
+        if (__DEV__) console.warn('[boot] legacy credential purge failed', e);
+      });
+
       // Legacy migration: copy over the old key if present.
       let res = await AsyncStorage.getItem('@atomicstep/isLoggedIn');
       if (!res) {
@@ -58,6 +71,25 @@ export default function RootNavigator() {
     };
     initFirstLaunch().catch(() => setBootState({ ready: true, isNewUser: false }));
   }, []);
+
+  // Optional cloud account. Deliberately NOT part of bootState: the app is
+  // local-first and must never wait on an account the user may never create.
+  // With no stored session none of this makes a network request.
+  useEffect(() => {
+    dispatch(initAuth());
+    const unsubscribe = onAuthStateChange((userId) => {
+      dispatch(authUserChanged(userId));
+    });
+    const stopRefresh = startAuthAutoRefresh();
+    return () => {
+      unsubscribe();
+      stopRefresh();
+    };
+  }, [dispatch]);
+
+  useEffect(() => {
+    if (authStatus === 'signedIn') dispatch(fetchProfile());
+  }, [authStatus, dispatch]);
 
   // Track the last-known calendar date so we can detect midnight rollovers
   const lastDateRef = useRef<string>(getLocalDateStr());
@@ -130,6 +162,16 @@ export default function RootNavigator() {
       <Stack.Screen
         name="Legal"
         component={LegalScreen}
+        options={{ animation: 'slide_from_bottom', presentation: 'modal' }}
+      />
+      <Stack.Screen
+        name="SignIn"
+        component={SignInScreen}
+        options={{ animation: 'slide_from_bottom', presentation: 'modal' }}
+      />
+      <Stack.Screen
+        name="SignUp"
+        component={SignUpScreen}
         options={{ animation: 'slide_from_bottom', presentation: 'modal' }}
       />
     </Stack.Navigator>

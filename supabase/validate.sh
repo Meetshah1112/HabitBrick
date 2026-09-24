@@ -45,6 +45,7 @@ run_sql "auth stub (local only)" "$HERE/_local_test_stub.sql" || exit 1
 run_sql "0001_schema.sql"        "$HERE/migrations/0001_schema.sql" || exit 1
 run_sql "0002_rls.sql"           "$HERE/migrations/0002_rls.sql" || exit 1
 run_sql "0003_functions.sql"     "$HERE/migrations/0003_functions.sql" || exit 1
+run_sql "0004_username_available.sql" "$HERE/migrations/0004_username_available.sql" || exit 1
 
 echo ""
 echo "=== RLS coverage ==="

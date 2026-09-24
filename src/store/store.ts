@@ -1,10 +1,12 @@
 import { configureStore } from '@reduxjs/toolkit';
 import habitReducer from './habitSlice';
+import authReducer from './authSlice';
 import { storageService } from '../api/storageService';
 
 export const store = configureStore({
   reducer: {
     habits: habitReducer,
+    auth: authReducer,
   },
 });
 

@@ -1,4 +1,8 @@
 export type RootStackParamList = {
+  // Optional cloud account screens, presented as modals over the app.
+  // Never a gate: the app is fully usable signed out.
+  SignIn: { prefillEmail?: string } | undefined;
+  SignUp: { prefillEmail?: string } | undefined;
   Welcome: { isNewUser: boolean };
   Tabs: { screen?: string; params?: Record<string, any> } | undefined;
   HabitDetail: { habitId: string };

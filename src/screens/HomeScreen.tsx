@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Pressable, Alert, TextInput } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Pressable, Alert, TextInput, Platform } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { User, X, Pencil, RotateCcw, Flame, Database } from 'lucide-react-native';
+import { User, X, Pencil, RotateCcw, Flame, Database, LogIn, LogOut, Cloud } from 'lucide-react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { COLORS, FONT_SIZES, SPACING, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import StickyNote from '../components/StickyNote';
@@ -10,14 +10,18 @@ import { useHabitStore } from '../store/habitStore';
 import { fetchDailyStreakStatus, markCelebrationShown, wasCelebrationShownToday } from '../api/streakService';
 import { storageService } from '../api/storageService';
 import { resetProgress } from '../store/habitSlice';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
+import type { AppDispatch, RootState } from '../store/store';
+import { signOutUser } from '../store/authSlice';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const ROTATIONS = [-1, 2, -2, 1, 1, -1.5, 0.5, -0.5];
 
 export default function HomeScreen() {
   const { habits } = useHabitStore();
-  const dispatch = useDispatch();
+  const dispatch = useDispatch<AppDispatch>();
+  const auth = useSelector((s: RootState) => s.auth);
+  const [accountError, setAccountError] = useState<string | null>(null);
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const [animatingPinId, setAnimatingPinId] = useState<string | null>(null);
@@ -102,6 +106,44 @@ export default function HomeScreen() {
 
   const handleHabitPress = (habitId: string) => {
     navigation.navigate('HabitDetail', { habitId });
+  };
+
+  // iOS can present only one view controller at a time. Navigating to the
+  // SignIn modal while this RN <Modal> is still dismissing can drop the
+  // navigation silently, so on iOS we wait for onDismiss. Other platforms
+  // do not have that constraint and navigate immediately.
+  const afterProfileModalDismiss = useRef<(() => void) | null>(null);
+
+  const closeProfileModalThen = (action: () => void) => {
+    if (Platform.OS === 'ios') {
+      afterProfileModalDismiss.current = action;
+      setShowProfileModal(false);
+    } else {
+      setShowProfileModal(false);
+      action();
+    }
+  };
+
+  const handleProfileModalDismiss = () => {
+    const action = afterProfileModalDismiss.current;
+    afterProfileModalDismiss.current = null;
+    action?.();
+  };
+
+  const handleOpenSignIn = () => {
+    setAccountError(null);
+    closeProfileModalThen(() => navigation.navigate('SignIn'));
+  };
+
+  // Signing out keeps every local habit: data belongs to the device, and the
+  // app keeps working offline exactly as before. No confirmation needed —
+  // it is fully reversible by signing back in.
+  const handleSignOut = async () => {
+    setAccountError(null);
+    const result = await dispatch(signOutUser());
+    if (signOutUser.rejected.match(result)) {
+      setAccountError((result.payload as string) ?? 'Could not sign out. Try again.');
+    }
   };
 
   const handleResetProgress = async () => {
@@ -215,6 +257,7 @@ export default function HomeScreen() {
           animationType="slide"
           transparent={true}
           onRequestClose={() => setShowProfileModal(false)}
+          onDismiss={handleProfileModalDismiss}
         >
           <View style={styles.modalOverlay}>
             <View style={styles.modalContent}>
@@ -247,6 +290,37 @@ export default function HomeScreen() {
                     <Pencil size={24} color={COLORS.textPrimary} strokeWidth={2} />
                     <Text style={styles.modalButtonText}>Edit Profile</Text>
                   </TouchableOpacity>
+
+                  {/* Optional cloud account. Hidden in builds without cloud config. */}
+                  {auth.isCloudEnabled && auth.status === 'signedOut' && (
+                    <TouchableOpacity style={styles.modalButton} onPress={handleOpenSignIn}>
+                      <LogIn size={24} color={COLORS.textPrimary} strokeWidth={2} />
+                      <View style={styles.accountTextBlock}>
+                        <Text style={styles.modalButtonText}>Sign in or create account</Text>
+                        <Text style={styles.accountSubtext}>Back up your bricks and add friends</Text>
+                      </View>
+                    </TouchableOpacity>
+                  )}
+
+                  {auth.isCloudEnabled && auth.status === 'signedIn' && (
+                    <>
+                      <View style={styles.modalButton}>
+                        <Cloud size={24} color={COLORS.statusTodo} strokeWidth={2} />
+                        <View style={styles.accountTextBlock}>
+                          <Text style={styles.modalButtonText}>
+                            {auth.profile ? `@${auth.profile.username}` : 'Signed in'}
+                          </Text>
+                          <Text style={styles.accountSubtext}>Cloud backup arrives in the next update</Text>
+                        </View>
+                      </View>
+                      <TouchableOpacity style={styles.modalButton} onPress={handleSignOut}>
+                        <LogOut size={24} color={COLORS.textPrimary} strokeWidth={2} />
+                        <Text style={styles.modalButtonText}>Sign out</Text>
+                      </TouchableOpacity>
+                    </>
+                  )}
+
+                  {accountError && <Text style={styles.accountError}>{accountError}</Text>}
 
                   <TouchableOpacity
                     style={[styles.modalButton, styles.dangerButton]}
@@ -398,6 +472,19 @@ const styles = StyleSheet.create({
   dangerButton: {
     backgroundColor: '#FEF2F2',
     borderColor: '#FECACA',
+  },
+  accountTextBlock: {
+    flex: 1,
+  },
+  accountSubtext: {
+    fontSize: FONT_SIZES.sm,
+    color: COLORS.textTertiary,
+    marginTop: 2,
+  },
+  accountError: {
+    fontSize: FONT_SIZES.sm,
+    color: COLORS.accentRedDark,
+    marginBottom: SPACING.md,
   },
   modalButtonText: {
     fontSize: FONT_SIZES.md,
