@@ -10,6 +10,7 @@ Apply in order:
 | `0002_rls.sql` | Row Level Security policies + `is_friend()` helper |
 | `0003_functions.sql` | `search_profiles`, `friend_feed`, `friends_leaderboard` |
 | `0004_username_available.sql` | Exact-match username check for the sign-up form |
+| `0005_completion_owner_integrity.sql` | Composite FK: a completion's owner must match its habit's owner |
 
 Paste each into the Supabase dashboard SQL editor, or run them with the
 Supabase CLI once a project is linked.
@@ -60,15 +61,28 @@ needs its own `blocks` table that survives the friendship being deleted, plus
 a policy denying `friendships` insert when a block exists in either direction.
 Tracked for the social phase — do not ship user-facing "Block" UI until then.
 
-## Validating the SQL locally
-
-The migrations have **not** been run against a live Postgres yet. To check them
-before touching your real project, start Docker Desktop and run:
+## Testing the database
 
 ```bash
-bash supabase/validate.sh
+npm run db:test
 ```
 
-It starts a throwaway Postgres 16 container, applies `_local_test_stub.sql`
-(a minimal stand-in for the Supabase-managed `auth` schema — not deployed),
-then applies all three migrations and reports the first error.
+Applies every file in `migrations/` (in name order) to real Postgres running
+in-process via PGlite (Postgres compiled to WASM, so no Docker is needed),
+then exercises the policies as Supabase's `authenticated` and `anon` roles:
+the signup trigger, `username_available`, the exact upserts the Phase 3
+backup sends, cross-user isolation, friend visibility, and the leaderboard.
+`_local_test_stub.sql` stands in for the Supabase-managed `auth` schema and
+is never deployed.
+
+Add a check to `tests/rls.test.mjs` for any new policy. This suite has
+already caught one real bug: before `0005`, a user could attach a completion
+to someone else's habit, and the owner's own completion for that day was then
+silently dropped by `ON CONFLICT DO NOTHING`.
+
+`validate.sh` does the same migration check against a Postgres 16 Docker
+container, if you prefer Docker.
+
+Not covered: the real Supabase `auth` schema and PostgREST. The stub mimics
+`auth.uid()` and Supabase's default grants, so run the migrations against a
+real (staging) project before shipping.

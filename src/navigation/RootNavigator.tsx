@@ -18,6 +18,8 @@ import { purgeLegacyCredentials } from '../api/legacyCredentialPurge';
 import { onAuthStateChange } from '../api/authService';
 import { startAuthAutoRefresh } from '../lib/supabase';
 import { initAuth, authUserChanged, fetchProfile } from '../store/authSlice';
+import { refreshBackupStatus, backUpNow } from '../store/backupSlice';
+import CloudBackupScreen from '../screens/CloudBackupScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -26,6 +28,8 @@ export default function RootNavigator() {
   const habits = useSelector((s: RootState) => s.habits.habits);
   const isLoaded = useSelector((s: RootState) => s.habits.isLoaded);
   const authStatus = useSelector((s: RootState) => s.auth.status);
+  const userId = useSelector((s: RootState) => s.auth.userId);
+  const backupStatus = useSelector((s: RootState) => s.backup.status);
 
   // We always boot into Welcome. isNewUser controls whether the splash
   // routes the user to AddHabit (first launch) or straight to Tabs (returning).
@@ -90,6 +94,28 @@ export default function RootNavigator() {
   useEffect(() => {
     if (authStatus === 'signedIn') dispatch(fetchProfile());
   }, [authStatus, dispatch]);
+
+  // Backup (Phase 3). Waits for isLoaded: evaluating against the not-yet-
+  // loaded empty list would silently claim the device with nothing in it.
+  // Only RESUMES an upload the user already consented to; the first upload
+  // is always started from the consent screen, never from here.
+  useEffect(() => {
+    if (authStatus !== 'signedIn' || !userId || !isLoaded) return;
+    dispatch(refreshBackupStatus(userId)).then((action) => {
+      const payload = refreshBackupStatus.fulfilled.match(action) ? action.payload : null;
+      if (payload?.decision === 'resumeUpload') dispatch(backUpNow({ consent: false }));
+    });
+  }, [authStatus, userId, isLoaded, dispatch]);
+
+  // A backup that failed (usually no connection) retries when the user
+  // comes back to the app, rather than on a background timer.
+  useEffect(() => {
+    if (backupStatus !== 'failed') return;
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') dispatch(backUpNow({ consent: false }));
+    });
+    return () => sub.remove();
+  }, [backupStatus, dispatch]);
 
   // Track the last-known calendar date so we can detect midnight rollovers
   const lastDateRef = useRef<string>(getLocalDateStr());
@@ -172,6 +198,11 @@ export default function RootNavigator() {
       <Stack.Screen
         name="SignUp"
         component={SignUpScreen}
+        options={{ animation: 'slide_from_bottom', presentation: 'modal' }}
+      />
+      <Stack.Screen
+        name="CloudBackup"
+        component={CloudBackupScreen}
         options={{ animation: 'slide_from_bottom', presentation: 'modal' }}
       />
     </Stack.Navigator>

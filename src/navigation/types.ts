@@ -3,6 +3,8 @@ export type RootStackParamList = {
   // Never a gate: the app is fully usable signed out.
   SignIn: { prefillEmail?: string } | undefined;
   SignUp: { prefillEmail?: string } | undefined;
+  /** Consent + progress for the first upload of this device's habits. */
+  CloudBackup: undefined;
   Welcome: { isNewUser: boolean };
   Tabs: { screen?: string; params?: Record<string, any> } | undefined;
   HabitDetail: { habitId: string };

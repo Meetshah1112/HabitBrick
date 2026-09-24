@@ -21,7 +21,10 @@ import { RootStackParamList } from '../navigation/types';
 import {
   User, AtSign, Mail, Lock, Eye, EyeOff, ArrowRight, ArrowLeft, CheckCircle2, XCircle,
 } from 'lucide-react-native';
+import { useDispatch } from 'react-redux';
 import { signUp, isUsernameAvailable, validateUsername } from '../api/authService';
+import type { AppDispatch } from '../store/store';
+import { refreshBackupStatus } from '../store/backupSlice';
 import { getLegacyEmailHint } from '../api/legacyCredentialPurge';
 import NoticeBanner, { type Notice } from '../components/NoticeBanner';
 import { getPasswordStrength } from '../utils/passwordStrength';
@@ -38,6 +41,7 @@ const LOCAL_DISPLAY_NAME_KEY = '@atomicstep/username';
 export default function SignUpScreen() {
   const navigation = useNavigation<NavigationProp>();
   const route = useRoute<SignUpRoute>();
+  const dispatch = useDispatch<AppDispatch>();
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [usernameStatus, setUsernameStatus] = useState<UsernameStatus>('idle');
@@ -169,6 +173,16 @@ export default function SignUpScreen() {
     }
 
     // Signed in immediately (email confirmation disabled on the project).
+
+    // Unclaimed habits on this device: ask before anything is uploaded.
+    const backupCheck = await dispatch(refreshBackupStatus(result.data.userId));
+    const decision = refreshBackupStatus.fulfilled.match(backupCheck)
+      ? backupCheck.payload?.decision
+      : null;
+    if (decision === 'needsConsent') {
+      navigation.replace('CloudBackup');
+      return;
+    }
     navigation.goBack();
   };
 

@@ -13,14 +13,40 @@ import { resetProgress } from '../store/habitSlice';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '../store/store';
 import { signOutUser } from '../store/authSlice';
+import { backUpNow, refreshBackupStatus } from '../store/backupSlice';
+import type { BackupStatus } from '../store/backupSlice';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const ROTATIONS = [-1, 2, -2, 1, 1, -1.5, 0.5, -0.5];
+
+function isBackupActionable(status: BackupStatus): boolean {
+  return status === 'needsConsent' || status === 'upToDate' || status === 'failed';
+}
+
+function describeBackup(status: BackupStatus, pendingHabits: number, lastBackupAt: string | null): string {
+  switch (status) {
+    case 'needsConsent':
+      return `Back up ${pendingHabits} habit${pendingHabits === 1 ? '' : 's'} from this phone`;
+    case 'uploading':
+      return 'Backing up...';
+    case 'upToDate':
+      return lastBackupAt
+        ? `Backed up ${new Date(lastBackupAt).toLocaleString()}. Tap to back up again.`
+        : 'Backed up. Tap to back up again.';
+    case 'failed':
+      return "Backup didn't finish. Tap to retry.";
+    case 'otherOwner':
+      return "This phone's habits are backed up to another account.";
+    default:
+      return 'Checking backup...';
+  }
+}
 
 export default function HomeScreen() {
   const { habits } = useHabitStore();
   const dispatch = useDispatch<AppDispatch>();
   const auth = useSelector((s: RootState) => s.auth);
+  const backup = useSelector((s: RootState) => s.backup);
   const [accountError, setAccountError] = useState<string | null>(null);
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
@@ -130,6 +156,18 @@ export default function HomeScreen() {
     action?.();
   };
 
+  const handleBackupRowPress = () => {
+    setAccountError(null);
+    if (backup.status === 'needsConsent') {
+      closeProfileModalThen(() => navigation.navigate('CloudBackup'));
+      return;
+    }
+    // Consent already given: re-run in place; the row shows live progress.
+    if (backup.status === 'upToDate' || backup.status === 'failed') {
+      dispatch(backUpNow({ consent: false }));
+    }
+  };
+
   const handleOpenSignIn = () => {
     setAccountError(null);
     closeProfileModalThen(() => navigation.navigate('SignIn'));
@@ -159,6 +197,9 @@ export default function HomeScreen() {
       
       // 3. Reset Redux State
       dispatch(resetProgress());
+      // Reset also cleared the backup claim (an @atomicstep/ key); re-derive
+      // the status so the menu doesn't keep showing a stale "Backed up".
+      dispatch(refreshBackupStatus());
       
       // 4. Close Modal and Navigate
       setShowProfileModal(false);
@@ -304,15 +345,27 @@ export default function HomeScreen() {
 
                   {auth.isCloudEnabled && auth.status === 'signedIn' && (
                     <>
-                      <View style={styles.modalButton}>
-                        <Cloud size={24} color={COLORS.statusTodo} strokeWidth={2} />
+                      <TouchableOpacity
+                        style={styles.modalButton}
+                        onPress={handleBackupRowPress}
+                        disabled={!isBackupActionable(backup.status)}
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: !isBackupActionable(backup.status) }}
+                      >
+                        <Cloud
+                          size={24}
+                          color={backup.status === 'failed' ? COLORS.accentRedDark : COLORS.statusTodo}
+                          strokeWidth={2}
+                        />
                         <View style={styles.accountTextBlock}>
                           <Text style={styles.modalButtonText}>
                             {auth.profile ? `@${auth.profile.username}` : 'Signed in'}
                           </Text>
-                          <Text style={styles.accountSubtext}>Cloud backup arrives in the next update</Text>
+                          <Text style={styles.accountSubtext}>
+                            {describeBackup(backup.status, backup.pendingHabits, backup.lastBackupAt)}
+                          </Text>
                         </View>
-                      </View>
+                      </TouchableOpacity>
                       <TouchableOpacity style={styles.modalButton} onPress={handleSignOut}>
                         <LogOut size={24} color={COLORS.textPrimary} strokeWidth={2} />
                         <Text style={styles.modalButtonText}>Sign out</Text>

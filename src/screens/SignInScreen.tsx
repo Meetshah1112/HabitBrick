@@ -18,7 +18,10 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { RootStackParamList } from '../navigation/types';
 import { Mail, Lock, Eye, EyeOff, ArrowRight, X } from 'lucide-react-native';
+import { useDispatch } from 'react-redux';
 import { signIn, sendPasswordReset } from '../api/authService';
+import type { AppDispatch } from '../store/store';
+import { refreshBackupStatus } from '../store/backupSlice';
 import { getLegacyEmailHint } from '../api/legacyCredentialPurge';
 import NoticeBanner, { type Notice } from '../components/NoticeBanner';
 
@@ -29,6 +32,7 @@ type SignInRoute = RouteProp<RootStackParamList, 'SignIn'>;
 export default function SignInScreen() {
   const navigation = useNavigation<NavigationProp>();
   const route = useRoute<SignInRoute>();
+  const dispatch = useDispatch<AppDispatch>();
   const [email, setEmail] = useState(route.params?.prefillEmail ?? '');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -76,6 +80,16 @@ export default function SignInScreen() {
 
     if (!result.ok) {
       setNotice({ kind: 'error', text: result.error });
+      return;
+    }
+
+    // Unclaimed habits on this device: ask before anything is uploaded.
+    const backupCheck = await dispatch(refreshBackupStatus(result.data));
+    const decision = refreshBackupStatus.fulfilled.match(backupCheck)
+      ? backupCheck.payload?.decision
+      : null;
+    if (decision === 'needsConsent') {
+      navigation.replace('CloudBackup');
       return;
     }
     // Presented as a modal over the app; auth state updates via the listener.
